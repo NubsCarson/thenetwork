@@ -206,7 +206,7 @@ test("staging builds keep the served entry, skills and signed router on configur
     expect((await buildSite(slop, directory, env)).ok).toBe(true);
     expect((await buildSite(hub, hubDirectory, env)).ok).toBe(true);
     const home = readFileSync(join(directory, "index.html"), "utf8");
-    const prompt = `Read ${origins.slop}/SKILL.md and follow it.`;
+    const prompt = `Read ${origins.slop}/SKILL.md?version=1.1.1 and follow it.`;
     expect(home).toContain(`<code data-prompt>${prompt}</code>`);
     expect(home).toContain(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`);
     for (const origin of ["https://chatgpt.com/", "https://claude.ai/new", "https://grok.com/", "https://gemini.google.com/app", "https://www.perplexity.ai/search"]) {
@@ -252,7 +252,9 @@ test("staging builds keep the served entry, skills and signed router on configur
 test("landing pages: one line, the prompt field, a logo for every agent; nothing else", () => {
   for (const s of SITES) {
     const home = read(s, "index.html");
-    const prompt = promptFor(s);
+    const version = (Bun.YAML.parse(read(s, "SKILL.md").split("---")[1]!) as { metadata: { version: string } }).metadata.version;
+    const skillUrl = `https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)}`;
+    const prompt = `Read ${skillUrl} and follow it.`;
     const q = encodeURIComponent(prompt);
     expect(home, s.domain).toContain(`<code data-prompt>${prompt}</code>`);
     expect(home, s.domain).toMatch(/<button type="button" data-copy[^>]*>Copy<\/button>/);
@@ -263,7 +265,7 @@ test("landing pages: one line, the prompt field, a logo for every agent; nothing
     for (const a of AGENTS) {
       const tile = row.match(new RegExp(`<(a|button)[^>]*data-agent="${a.id}"[^>]*>\\s*<svg`))?.[0] ?? "";
       expect(tile, `${s.domain} ${a.id}`).toContain(`aria-label="${a.href ? "Open in" : "Copy the prompt for"} ${a.name}"`);
-      if (a.href) expect(tile, `${s.domain} ${a.id}`).toContain(`href="${a.href.replace("{q}", q).replace("{skill}", encodeURIComponent(`https://${s.domain}/SKILL.md`))}"`);
+      if (a.href) expect(tile, `${s.domain} ${a.id}`).toContain(`href="${a.href.replace("{q}", q).replace("{skill}", encodeURIComponent(skillUrl))}"`);
       else expect(tile, `${s.domain} ${a.id}`).toMatch(/^<button type="button"[^>]* hidden /);
       expect(tile.includes('data-only="desktop"'), `${s.domain} ${a.id}`).toBe(Boolean(a.desktopOnly));
     }
@@ -420,6 +422,9 @@ describe("dev server", () => {
     expect(md.status).toBe(200);
     expect(md.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     const bytes = new Uint8Array(await md.arrayBuffer());
+    const versioned = await fetch(`http://127.0.0.1:${up.port}/SKILL.md?version=1.1.1`);
+    expect(versioned.status).toBe(200);
+    expect(Buffer.from(await versioned.arrayBuffer()).equals(Buffer.from(bytes))).toBe(true);
     expect(Buffer.from(bytes).equals(readFileSync(join(out(slop), "SKILL.md")))).toBe(true);
     const idx = await fetch(`http://127.0.0.1:${up.port}/.well-known/agent-skills/index.json`);
     expect(idx.headers.get("content-type")).toContain("application/json");
