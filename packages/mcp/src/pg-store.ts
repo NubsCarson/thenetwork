@@ -112,9 +112,15 @@ export class PgOAuthStore implements OAuthStore {
   async revokeToken(hash: string, at: number) {
     await this.sql`update oauth.tokens set revoked_at = ${ts(at)} where hash = ${hash} and revoked_at is null`;
   }
-  async rotateRefresh(hash: string, at: number) {
-    const r = await this.sql`update oauth.tokens set rotated_at = ${ts(at)} where hash = ${hash} and kind = 'refresh' and rotated_at is null and revoked_at is null returning hash`;
-    return r.length > 0;
+  async rotateRefresh(hash: string, at: number, pair: readonly [Token, Token], audit: AuditRow) {
+    return this.sql.begin(async tx => {
+      const r = await tx`update oauth.tokens set rotated_at = ${ts(at)} where hash = ${hash} and kind = 'refresh' and rotated_at is null and revoked_at is null returning hash`;
+      if (!r.length) return false;
+      for (const t of pair) await tx`insert into oauth.tokens (hash, kind, grant_id, client_id, app_id, resource, scopes, created_at, expires_at, revoked_at, rotated_at)
+        values (${t.hash}, ${t.kind}, ${t.grantId}, ${t.clientId}, ${t.app}, ${t.resource}, ${tx.array(t.scopes, "TEXT")}, ${ts(t.createdAt)}, ${ts(t.expiresAt)}, ${ts(t.revokedAt)}, ${ts(t.rotatedAt)})`;
+      await tx`insert into oauth.audit (at, kind, client_id, grant_id, app_id, detail) values (${ts(audit.at)}, ${audit.kind}, ${audit.clientId}, ${audit.grantId}, ${audit.app}, ${audit.detail})`;
+      return true;
+    });
   }
 
   async audit(a: AuditRow) {
