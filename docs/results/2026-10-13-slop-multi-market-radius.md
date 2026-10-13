@@ -38,9 +38,52 @@ One existing tracked simulation target remains off target: persona completion is
 
 ## Evidence limits
 
-No real member, OTP, messaging provider, deployment, or new infrastructure was used. Model keys were cleared by the official offline simulation runner. Provider/model/calls/cost for these runs: none/none/0/0.
+No real member, OTP, messaging delivery, deployment, or new infrastructure was used. The official offline simulation cleared model keys. The separate real-model run below used the existing authorized service provider without exporting credentials.
 
-Real LLM reader evidence remains pending: the current execution environment has no configured Surplus or OpenAI key. Hosted full simulation, integration, and E2E checks remain separate gates. The LLM schema change has validation coverage, not a claimed live-model result.
+### Hosted qualification
+
+Exact source head `d32c63d60211b86856c3e02a143c72281c84f819` passed hosted run [38349564158](https://github.com/eliza-research/thenetwork/actions/runs/38349564158).
+
+- Integration: 533 passed, 0 failed, 11,196 assertions.
+- E2E: 38 passed, 0 failed, 490 assertions; PostgreSQL checks ran.
+- Simulation: 329/329 blocking gates passed; 14 tracked targets remain off target.
+- Type checks, plugin snapshot, and production site build passed.
+
+### Real LLM extraction
+
+Date: 2026-10-13. Provider: Surplus Intelligence. Requested and returned model: `gpt-6-luna` for every response.
+
+A portable bundle contains the actual base and candidate readers plus the existing core `defaultLLM()` implementation.
+Source candidate: `d32c63d60211b86856c3e02a143c72281c84f819`; base: `61d5663b2f56cbdd2f54cc1c6bbb6d09ddd1f21d`.
+Bundle SHA-256: `aa2beee5819aaccd5279aa99dbc06c8a6d5d72004fd9a5b1e678d34199bf84f3`.
+Local and remote hashes matched before execution. Runtime: Bun 1.4.2.
+
+Execution command, after verifying the existing provider and model:
+
+```sh
+RADIUS_PROVIDER_MODEL_VERIFIED=1 LLM_MAX_RETRIES=0 bun --no-env-file ./real-llm-radius.portable.mjs --execute-real
+```
+
+Two fixed synthetic inputs ran against each source version. The inputs were declared before any model call:
+
+1. `I'm a man, 32. I date in San Francisco as well as New York City, within fifty miles.`
+2. `I'm a woman, 30. My dating markets are San Francisco; New York City. My radius is seventy-five miles.`
+
+| Input | Actual base output | Actual candidate output |
+| --- | --- | --- |
+| Fifty miles | `{"mode":"radius","miles":50}` | `{"mode":"multi","markets":["nyc","sf"],"miles":50}` |
+| Seventy-five miles | `{"mode":"radius","miles":75}` | `{"mode":"multi","markets":["nyc","sf"],"miles":75}` |
+
+All four HTTP responses were 200. Each case used one physical request, no retry, fallback, or token regrowth.
+Each request allowed 500 completion tokens and 12 seconds; the entire run allowed 55 seconds.
+The provider reported costs of 34, 41, 44, and 44 micro-USD: **163 micro-USD ($0.000163) total**.
+This is provider-reported response cost, not an independently reconciled invoice.
+The soft SDK cost guard was 5,000 micro-USD; it stops subsequent calls, not an already-issued request.
+Actual synthetic model text, prompt hashes, usage, bundle hash, and Bun binary hash were retained privately.
+Only the owned temporary bundle and directory were removed after collection.
+
+These two extraction cases prove the reader regression. They do not measure population quality or prove real user acceptance.
+Changed multi-step agent-client video qualification remains open. Deferred clients remain deferred.
 
 This is source-level bug evidence. Real app membership and canonical Cloud account, assistant, and website history acceptance remain separate work.
 
