@@ -28,7 +28,7 @@ export type Dealbreaker = (typeof DEALBREAKER_IDS)[number];
 export const DATE_ACTIVITY_IDS = ["coffee", "drinks", "dinner", "walk", "museum", "live_music", "comedy", "climbing", "hike", "cooking_class"] as const;
 export type DateActivity = (typeof DATE_ACTIVITY_IDS)[number];
 export const GENDERS: readonly Gender[] = ["man", "nonbinary", "woman"];
-export type Distance = { mode: "city" } | { mode: "radius"; miles: number } | { mode: "multi"; markets: City[] };
+export type Distance = { mode: "city" } | { mode: "radius"; miles: number } | { mode: "multi"; markets: City[]; miles?: number };
 export interface Location { zip?: string; area?: string; known: boolean }
 
 /** Where a field value came from in the member's own words. `turn` counts messages over the whole conversation. */
@@ -466,6 +466,16 @@ const MARKET_WORDS: [RegExp, City][] = [[/^(?:nyc|new york|ny|new york city)$/, 
 const MARKET_RX = "(nyc|new york city|new york|ny|sf|san francisco|the bay area|the bay|bay area|la|los angeles|l\\.a\\.?)";
 const marketOf = (w: string) => MARKET_WORDS.find(([rx]) => rx.test(w.trim()))?.[1];
 
+/** Markets and a numeric radius are independent preferences; an explicit city choice replaces both. */
+function mergeDistance(previous: Distance | undefined, next: Distance): Distance {
+  if (next.mode === "radius" && previous?.mode === "multi") return { ...previous, miles: next.miles };
+  if (next.mode === "multi") {
+    const miles = next.miles ?? (previous?.mode === "radius" || previous?.mode === "multi" ? previous.miles : undefined);
+    return { ...next, ...(miles === undefined ? {} : { miles }) };
+  }
+  return next;
+}
+
 function readDistance(t: string, asked: OnboardField | undefined): Cand<Distance> | undefined {
   let best: Cand<Distance> | undefined;
   for (const s of sentences(t)) {
@@ -480,7 +490,7 @@ function readDistance(t: string, asked: OnboardField | undefined): Cand<Distance
       let n = Math.max(Number(m[1]), m[2] ? Number(m[2]) : 0);
       if (/^k/.test(m[3]!)) n = Math.round(n * 0.621);
       if (!(n >= 1 && n <= 200)) continue;
-      best = cand<Distance>({ mode: "radius", miles: Math.round(n) }, s, m, /^k/.test(m[3]!) ? 0.85 : 0.95);
+      best = cand<Distance>(mergeDistance(best?.value, { mode: "radius", miles: Math.round(n) }), s, m, /^k/.test(m[3]!) ? 0.85 : 0.95);
     }
     for (const m of all(/\b(?:anywhere|any where|all over|wherever)\s+(?:in\s+)?(?:the\s+)?(?:city|nyc|new york|sf|san francisco|la|los angeles|town)\b|\b(?:the\s+)?(?:whole|entire)\s+(?:city|nyc|town|bay)\b|\bcity\s*-?\s*wide\b|\b(?:just|only)\s+(?:the\s+)?(?:city|nyc|sf|la)\b(?!\s+(?:for|to))|\b(?:all|any of the|any)\s+(?:5|five)\s+boroughs\b|\b(?:the\s+)?(?:city|nyc)\s+is\s+(?:fine|good|ok|okay|cool)\b|\bdistance (?:doesn'?t|does not|dont) (?:really )?matter\b|\b(?:i'?ll|i will|happy to|can|could) (?:go|travel) anywhere\b|\bdon'?t care (?:about|how) (?:the )?(?:distance|far)\b|\banywhere is fine\b/, s.text)) {
       best = cand<Distance>({ mode: "city" }, s, m, 0.9);
@@ -488,7 +498,7 @@ function readDistance(t: string, asked: OnboardField | undefined): Cand<Distance
     for (const m of all(new RegExp(`\\b${MARKET_RX}\\s*(?:and|&|\\+|or|\\/|,)\\s*${MARKET_RX}(?:\\s*(?:and|&|\\+|or|\\/|,)\\s*${MARKET_RX})?\\b`), s.text)) {
       if (!(asked === "distance" || /\b(?:date|dating|split|between|bounce|both|time in|back and forth|live in|half|either)\b/.test(s.text))) continue;
       const ms = [...new Set([m[1], m[2], m[3]].filter(Boolean).map(x => marketOf(x!)).filter((x): x is City => !!x))].sort();
-      if (ms.length >= 2) best = cand<Distance>({ mode: "multi", markets: ms }, s, m, 0.9);
+      if (ms.length >= 2) best = cand<Distance>(mergeDistance(best?.value, { mode: "multi", markets: ms }), s, m, 0.9);
     }
     if (asked === "distance" && !best) {
       const m = /^\s*(?:within\s+|about\s+|around\s+|up to\s+|like\s+|maybe\s+|prob(?:ably)?\s+|max\s+)?(\d{1,3})\s*(?:ish|max|tops|or so)?\s*[?!.]*\s*$/.exec(s.text);
@@ -817,7 +827,7 @@ export function mergeReading(p0: SlopOnboarding, r: Reading, text: string): Slop
   }
   if (r.ageRange) p.ageRange = field(r.ageRange, turn, text);
   else if (r.ageRel && p.age && p.age.value >= 18) p.ageRange = field({ ...r.ageRel, value: [Math.max(18, p.age.value - r.ageRel.value), p.age.value + r.ageRel.value] as [number, number] }, turn, text);
-  if (r.distance) p.distance = field(r.distance, turn, text);
+  if (r.distance) p.distance = field({ ...r.distance, value: mergeDistance(p.distance?.value, r.distance.value) }, turn, text);
   if (r.location && (r.location.value.known || !p.location?.value.known || r.location.value.zip)) p.location = field(r.location, turn, text);
   if (r.goal) p.goal = field(r.goal, turn, text);
   for (const k of Object.keys(r.values) as (keyof Values)[]) { const c = r.values[k]; if (c) (p.values as Record<string, unknown>)[k] = field(c as Cand<unknown>, turn, text); }
@@ -918,7 +928,7 @@ export function slopOnboardTags(p: SlopOnboarding): { tags: SlopTag[]; replaces:
     const d = p.distance.value, c = p.distance.confidence;
     if (d.mode === "radius") { add(`slop:scope:radius:${d.miles}`, "preference", "agent_private", c); add(`slop:max_miles:${d.miles}`, "preference", "agent_private", c); }
     else if (d.mode === "city") { add("slop:scope:city", "preference", "agent_private", c); add("slop:max_miles:25", "preference", "agent_private", c); }
-    else { add(`slop:scope:multi:${d.markets.join(",")}`, "preference", "agent_private", c); add("slop:max_miles:25", "preference", "agent_private", c); }
+    else { add(`slop:scope:multi:${d.markets.join(",")}`, "preference", "agent_private", c); add(`slop:max_miles:${d.miles ?? 25}`, "preference", "agent_private", c); }
     replaces.push("slop:scope:", "slop:max_miles:");
   }
   if (p.goal) { add(`slop:goal:${p.goal.value}`, "goal", "matchable", p.goal.confidence); replaces.push("slop:goal:"); }
@@ -962,7 +972,7 @@ export function slopReaderPrompt(text: string, ctx: { asked?: OnboardField; miss
       "Never guess or infer. Leave a field out unless the message states it. Never infer who someone seeks from an orientation word.",
       "Every field you report is {\"value\": ..., \"quote\": \"<exact words from the message that state it>\"}.",
       "Fields: gender (\"woman\"|\"man\"|\"nonbinary\", the sender's own); seeks (array of those, who the sender wants to date);",
-      "ageRange ([lo, hi] integers 18-99); distance ({\"mode\":\"city\"} or {\"mode\":\"radius\",\"miles\":n}); location ({\"zip\":\"5 digits\"} or {\"area\":\"neighborhood name\"});",
+      "ageRange ([lo, hi] integers 18-99); distance ({\"mode\":\"city\"} or {\"mode\":\"radius\",\"miles\":n} or {\"mode\":\"multi\",\"markets\":[\"nyc\",\"sf\"],\"miles\":n}); multi needs at least two distinct markets from nyc/sf/la; omit optional miles unless explicitly stated, 1-200; location ({\"zip\":\"5 digits\"} or {\"area\":\"neighborhood name\"});",
       `goal ("casual"|"long_term"|"unsure"); dealbreakers (array of ${DEALBREAKER_IDS.join(", ")}); interests (array of ${[...INTEREST_TAGS].join(", ")});`,
       `activities (first-date ideas, array of ${DATE_ACTIVITY_IDS.join(", ")}); selfAge (the sender's own age now, integer).`,
       "Reply with only one JSON object holding the fields you found.",
@@ -982,12 +992,20 @@ export function validateSlopReading(raw: unknown, text: string): SlopLlmReading 
     if (typeof v !== "object" || Array.isArray(v)) throw new Error(`bad_field:${k}`);
     const { value, quote } = v as { value: unknown; quote: unknown };
     if (typeof quote !== "string" || !quote.trim() || !t.includes(normText(quote).trim())) throw new Error(`bad_quote:${k}`);
+    const isMiles = (x: unknown) => typeof x === "number" && Number.isFinite(x) && x >= 1 && x <= 200;
     const isG = (x: unknown) => typeof x === "string" && (GENDERS as readonly string[]).includes(x);
     const ok =
       k === "gender" ? isG(value)
       : k === "seeks" ? Array.isArray(value) && value.length > 0 && value.every(isG)
       : k === "ageRange" ? Array.isArray(value) && value.length === 2 && value.every(x => Number.isInteger(x) && x >= 18 && x <= 99) && (value[0] as number) <= (value[1] as number)
-      : k === "distance" ? !!value && typeof value === "object" && ((value as Distance).mode === "city" || ((value as Distance).mode === "radius" && Number.isFinite((value as { miles: number }).miles) && (value as { miles: number }).miles >= 1 && (value as { miles: number }).miles <= 200))
+      : k === "distance" ? !!value && typeof value === "object" && (
+        (value as Distance).mode === "city"
+        || ((value as Distance).mode === "radius" && isMiles((value as { miles: unknown }).miles))
+        || ((value as Distance).mode === "multi" && Array.isArray((value as { markets: unknown }).markets)
+          && (value as { markets: unknown[] }).markets.length >= 2
+          && (value as { markets: unknown[] }).markets.every(m => ["nyc", "sf", "la"].includes(m as string))
+          && new Set((value as { markets: unknown[] }).markets).size === (value as { markets: unknown[] }).markets.length
+          && ((value as { miles?: unknown }).miles === undefined || isMiles((value as { miles: unknown }).miles))))
       : k === "location" ? !!value && typeof value === "object" && ((typeof (value as Location).zip === "string" && /^\d{5}$/.test((value as Location).zip!)) || (typeof (value as Location).area === "string" && AREA_INDEX.has(ALIAS.get(areaNorm((value as Location).area!)) ?? areaNorm((value as Location).area!))))
       : k === "goal" ? value === "casual" || value === "long_term" || value === "unsure"
       : k === "dealbreakers" ? Array.isArray(value) && value.every(x => (DEALBREAKER_IDS as readonly unknown[]).includes(x))
@@ -1054,7 +1072,7 @@ function mergeLlm(p0: SlopOnboarding, r: SlopLlmReading, text: string, missing: 
     if (k === "gender") p.gender = mk(x.value as Gender, x.quote);
     if (k === "seeks") p.seeks = mk([...new Set(x.value as Gender[])].sort(), x.quote);
     if (k === "ageRange") p.ageRange = mk(x.value as [number, number], x.quote);
-    if (k === "distance") p.distance = mk(x.value as Distance, x.quote);
+    if (k === "distance") p.distance = mk(mergeDistance(p.distance?.value, x.value as Distance), x.quote);
     if (k === "location") {
       const v = x.value as Location;
       if (v.zip) p.location = mk({ zip: v.zip, known: isKnownZip(v.zip) }, x.quote);

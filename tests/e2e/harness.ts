@@ -1,3 +1,4 @@
+import { SQL } from "bun";
 // The whole platform in one process, wired as in production (docs/runbook-platform.md section 2):
 //   four site servers (the built static files, and the production router code, deploy/router.ts, for
 //   /api/*, /mcp, /oauth/* and /.well-known/oauth-*)  ->  the shared backend (deploy/backend
@@ -87,8 +88,13 @@ export interface Stack {
 
 let stackSequence = 0;
 
-export async function startStack(o: { privateOpenAiApps?: readonly AppId[] } = {}): Promise<Stack> {
+export async function startStack(o: { privateOpenAiApps?: readonly AppId[]; slopCity?: "sf" } = {}): Promise<Stack> {
   const url = await migratedDb(`e2e_${++stackSequence}`);
+  if (o.slopCity) {
+    const setup = new SQL({ url, max: 1 });
+    await setup`update platform.networks set id='slop:sf', city='sf' where app_id='slop'`;
+    await setup.close();
+  }
   const photoDir = mkdtempSync(join(tmpdir(), "e2e-photos-"));
   const clock = new SimClock(START);
   const env = { PLATFORM_ENV: "dev", PLATFORM_PROXY_SECRET: PROXY_SECRET, SERVICE_TURN_SECRET: TURN_SECRET };
