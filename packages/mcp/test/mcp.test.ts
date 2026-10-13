@@ -20,8 +20,8 @@ describe("Streamable HTTP, 2026-07-28", () => {
     const l = await rpc(env, NTWRK, "tools/list");
     expect(l.body!.result.tools.map((t: any) => t.name)).toEqual(["app_info", "start_signup", "check_status", "submit_profile", "get_updates"]);
     for (const t of l.body!.result.tools) {
-      // Every tool but submit_profile only reads; submit_profile adds to the person's own profile (never destructive).
-      const ro = t.name !== "submit_profile";
+      // Profile submission and reading updates modify the person's own state.
+      const ro = !["submit_profile", "get_updates"].includes(t.name);
       expect(t.annotations).toEqual({ title: expect.any(String), readOnlyHint: ro, destructiveHint: false, idempotentHint: ro, openWorldHint: false });
       expect(t.inputSchema.additionalProperties).toBe(false);
     }
