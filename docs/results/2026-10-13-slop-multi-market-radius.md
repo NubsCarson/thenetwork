@@ -88,3 +88,23 @@ Changed multi-step agent-client video qualification remains open. Deferred clien
 This is source-level bug evidence. Real app membership and canonical Cloud account, assistant, and website history acceptance remain separate work.
 
 Attribution: automated Codex/agent implementation and independent source review under Nubs's project preapproval. It does not imply individual human review.
+
+## Actual local Codex client, 2026-10-13
+
+One actual `codex-cli 0.160.1` invocation used native Streamable HTTP MCP against the real candidate service/router on loopback. Normal ChatGPT-account authentication and configured `gpt-6.1-sol` / medium reasoning were preserved. The CLI JSON did not emit the resolved startup/returned model field, so that field remains unavailable. No model/provider override or retry was used.
+
+The fictional Alex, age 27, had preauthorized normal synthetic OAuth and fake local OTP; this does not qualify Codex-native OAuth login. Before the client, normal MCP intake and independent PostgreSQL/state readback showed SF+NYC with 100 miles. The actual client performed exactly three calls:
+
+1. `check_status({app:"slop"})` returned `active`.
+2. `submit_profile` sent: "Only change my dating distance to 50 miles, not 100. Keep my SF and NYC dating markets and my Bay Area home unchanged." It returned `submitted:true`.
+3. `check_status({app:"slop"})` returned `active`.
+
+Independent stored-state readback verified 50 miles, both markets, the same person/member/OAuth grant, unchanged home city SF and private scope/max-mile tags. Presence remained empty before and after; no physical presence is claimed. `check_status` itself does not expose preferences.
+
+Client exit 0, no timeout, 17.98 seconds. CLI aggregate usage: 145701 input tokens, 87168 cached input tokens, 331 output tokens. One CLI attempt is not a measured physical model-request count; that count and invoice cost are unavailable. The Network fixture made zero external provider calls and one fake local OTP send; actual Codex account model usage is separate.
+
+[Recorded terminal playback](media/2026-10-13-slop-codex-client-playback.mp4) (142484 bytes; SHA256 `dd57101be69939af1fa2dbd06a020d395e5dc21492169cf2044672a88e3528a2`) retains genuine native MCP request/result events and their recorded times. Warnings, private paths/session metadata and agent narration were omitted. It is terminal playback, not browser video or live screen capture. The complete sanitized recording is retained privately. There is no before-client video; earlier actual HTTP/PostgreSQL and real-model broken/working evidence remains separately scoped above.
+
+Cleanup verified the exact owned database absent, all five owned listeners stopped, synthetic bearer retired, and existing root PostgreSQL/default database intact. No personal account/history, real OTP or production configuration changed.
+
+Client source was exact `f904e3f55b4b7db43d634853600be1cdade0f3a3`. The later local merge `df8642cf21cbce8598598d9957e5ec818fdce25f` incorporates main's truthful-home fix and preserves the radius product files byte-for-byte. Its root/sites types pass; integrated HTTP/PostgreSQL and full CI must still qualify that merged source. No deployed ChatGPT signup, personal Slop eligibility or production SF matching is claimed. OpenClaw, Hermes and Cursor remain deferred.
