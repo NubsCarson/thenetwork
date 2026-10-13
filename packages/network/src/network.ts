@@ -483,6 +483,15 @@ const PRONOUN_TARGET = /^(?:him|her|them|they|he|she|my date|my match|(?:the|thi
 /** A reply to "Who do you mean?" that drops the question. */
 const NEVER_MIND = /^\W*(?:never ?mind|nvm|nobody|no one|none|forget it|no|nope|cancel that)\W*$/i;
 
+/** Actual NYC presence for the whole requested window; conversation ownership grants no location. */
+export function presentInNyc(snapshot: WorldSnapshot, id: MemberId, from: number, to: number): boolean {
+  const member = snapshot.members.find(m => m.id === id);
+  if (!member) return false;
+  const trips = snapshot.presence.filter(p => p.memberId === id && p.type === "temporary");
+  if (trips.some(p => p.city !== "nyc" && (p.from ?? 0) < to && (p.to ?? Infinity) > from)) return false;
+  return member.homeCity === "nyc" || trips.some(p => p.city === "nyc" && p.from !== undefined && p.to !== undefined && p.from <= from && p.to >= to);
+}
+
 export class ConsentNetwork implements NetworkUnderTest {
   readonly name = "consent";
   readonly trust = new Trust();
@@ -4322,8 +4331,7 @@ export class ConsentNetwork implements NetworkUnderTest {
 
   /** Is the member in New York for all of [from, to]? Announced trips elsewhere say no. */
   inNyc(id: MemberId, from: number, to: number): boolean {
-    const snap = this.snapshotCached();
-    return !snap.presence.some(p => p.memberId === id && p.type === "temporary" && p.city !== "nyc" && (p.from ?? 0) < to && (p.to ?? Infinity) > from);
+    return presentInNyc(this.snapshotCached(), id, from, to);
   }
   private snapCache?: { at: number; snap: WorldSnapshot };
   /** The public snapshot, rebuilt at most every 20 sim minutes or when something we learned changed. */

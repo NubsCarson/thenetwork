@@ -26,7 +26,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { SQL } from "bun";
 import { isDeepStrictEqual } from "node:util";
-import { DAY, RealClock, type Clock, type MemberId } from "@thenetwork/core";
+import { DAY, RealClock, type Clock, type City, type MemberId } from "@thenetwork/core";
 import type { ActionResult, NetworkOptions, ReviewDecision, ReviewOptions } from "../src/network.ts";
 import { brandOf, copy as ntwrkCopy, copyFor, ELIZA_NOTICE, type Copy } from "../src/copy.ts";
 import { isMinor } from "@thenetwork/core";
@@ -41,7 +41,7 @@ import { canJoin } from "../../core/src/policy.ts";
 import { CostLedger, costRatesFromEnv, PgCostSink } from "./cost.ts";
 import { BlooioAdapter, type ChannelAdapter, type DirectKind, type Outbound } from "./channel.ts";
 import { APPS, isAppId, keywordApp, lookingFor, POWERED_BY, type AppId, type AppInfo } from "../../platform/src/apps.ts";
-import { Accounts, type AccountHooks, type JoinHookContext, type MemberHookContext } from "../../platform/src/accounts.ts";
+import { Accounts, homeCityOf, type AccountHooks, type JoinHookContext, type MemberHookContext } from "../../platform/src/accounts.ts";
 import { joinAgeCheck } from "../../platform/src/age.ts";
 import { detectKeyword as platformKeyword, keywordEvent, leaveTarget, resolveConsent, stopScope, type StopScope } from "../../platform/src/consent.ts";
 import { devShortcutsAllowed, isProduction, platformEnv, type Env } from "../../platform/src/env.ts";
@@ -218,21 +218,25 @@ const JOIN_FILLER = new Set(["hi", "hey", "hello", "yo", "im", "i'm", "i", "am",
  * only in a short answer: one name at most, and filler words ("Sam, 29", "Kim 16"). In a sentence
  * ("Sounds good, 7 works for me") it is not an age.
  */
-export function parseJoinText(text: string, appWords: readonly string[], nameOk: boolean): { age?: number; name?: string } {
+export function parseJoinText(text: string, appWords: readonly string[], nameOk: boolean): { age?: number; name?: string; homeCity?: City; invalidHome?: boolean } {
   const t = text.normalize("NFKC").trim();
-  const stated = agesStated(t);
-  let age = stated.explicit ?? stated.age ?? ageAnswer(t);
+  const homes = [...t.matchAll(/(?:\b(?:my home(?: city)?(?: is| in|:)?|i live in|i am based in|i'm based in)|(?:^|[.!?;,]\s*)(?:home(?: city)?(?: is| in|:)?|based in))\s+([^.!?;,\n]+)/gi)];
+  const cities = homes.map(m => homeCityOf(m[1]));
+  const invalidHome = cities.some(c => !c) || new Set(cities).size > 1;
+  const nameText = homes.reduce((text, m) => text.replace(m[0], " "), t);
+  const stated = agesStated(nameText);
+  let age = stated.explicit ?? stated.age ?? ageAnswer(nameText);
   if (age === undefined) {
-    const nums = [...t.matchAll(/(?:^|[\s,.;:(])(\d{1,3})(?=$|[\s,.;:!)])/g)];
-    const others = t.replace(/\d+/g, " ").replace(/[^\p{L}' ]+/gu, " ").split(/\s+/).filter(Boolean).map(lower)
+    const nums = [...nameText.matchAll(/(?:^|[\s,.;:(])(\d{1,3})(?=$|[\s,.;:!)])/g)];
+    const others = nameText.replace(/\d+/g, " ").replace(/[^\p{L}' ]+/gu, " ").split(/\s+/).filter(Boolean).map(lower)
       .filter(w => !JOIN_FILLER.has(w) && !appWords.includes(w));
-    if (nums.length === 1 && others.length <= 1 && !/\d[^\d\s,.;:!)]|[^\d\s,.;:(]\d/.test(t)) age = Number(nums[0]![1]);
+    if (nums.length === 1 && others.length <= 1 && !/\d[^\d\s,.;:!)]|[^\d\s,.;:(]\d/.test(nameText)) age = Number(nums[0]![1]);
   }
   if (age !== undefined && !(age > 0 && age < 120)) age = undefined;
-  if (!nameOk && age === undefined) return {};
-  const words = t.replace(/[^\p{L}' -]+/gu, " ").split(/[\s-]+/).filter(Boolean);
+  if (!nameOk && age === undefined) return { ...(cities[0] ? { homeCity: cities[0] } : {}), ...(invalidHome ? { invalidHome: true } : {}) };
+  const words = nameText.replace(/[^\p{L}' -]+/gu, " ").split(/[\s-]+/).filter(Boolean);
   const name = words.find(w => /^\p{L}[\p{L}']{0,29}$/u.test(w) && !NOT_NAMES.has(lower(w)) && !appWords.includes(lower(w)));
-  return { ...(age !== undefined ? { age } : {}), ...(name ? { name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() } : {}) };
+  return { ...(age !== undefined ? { age } : {}), ...(name ? { name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() } : {}), ...(cities[0] ? { homeCity: cities[0] } : {}), ...(invalidHome ? { invalidHome: true } : {}) };
 }
 
 export class NetworkService implements RuntimeHost {
@@ -369,14 +373,19 @@ export class NetworkService implements RuntimeHost {
     for (const r of this.runtimes.values()) if (r.app.id === app && (city === undefined || r.city === city)) return r;
     return undefined;
   }
-  /** The network of the app that holds this member (a second city of an app is its own network). */
+  /** A registered home owns its conversation; an unserved home uses this app's existing default. */
+  runtimeForHome(app: AppId, homeCity: string): NetworkRuntime | undefined {
+    return this.runtimeFor(app, homeCity) ?? this.runtimeFor(app);
+  }
+
+  conversationCities(rt: NetworkRuntime): readonly string[] {
+    return ["nyc", "sf", "la"].filter(city => this.runtimeForHome(rt.app.id, city) === rt);
+  }
+
+  /** The same registry ownership is used by snapshot loading, address books and member actions. */
   async runtimeOfMember(app: AppId, memberId: string): Promise<NetworkRuntime | undefined> {
-    for (const r of this.runtimes.values()) {
-      if (r.app.id !== app) continue;
-      await r.identities();
-      if (r.addressOf(memberId as MemberId)) return r;
-    }
-    return undefined;
+    const [row] = await this.runtimeFor(app)?.scoped(tx => tx`select home_city from network.members where app_id=${app} and id=${memberId} and account_status not in ('invited','removed')`) ?? [];
+    return row ? this.runtimeForHome(app, row.home_city) : undefined;
   }
   private copyOf(app: AppInfo): Copy {
     if (app.id === "ntwrk") return ntwrkCopy;
@@ -599,17 +608,18 @@ export class NetworkService implements RuntimeHost {
    * first name, age) and what the person gave at join (neighborhood, interests). The phone stays in
    * platform.phone_identities. Written with app.app_id set (migration 0004).
    */
-  async createMember(rt: NetworkRuntime, m: Membership, info: { age: number; firstName: string; neighborhood?: string; interests?: string[]; zip?: string }) {
+  async createMember(rt: NetworkRuntime, m: Membership, info: { age: number; firstName: string; homeCity?: string; neighborhood?: string; interests?: string[]; zip?: string }) {
     const now = new Date(this.clock.now());
+    const homeCity = info.homeCity ?? homeCityOf(m.profile.homeCity) ?? rt.city;
     // The app's categories (packs.ts): slop is dating and only for adults; peon is work; friends is social and hobby.
     const prefs = { ...rt.wiring.prefs(info.age), quietHours: [21, 9], formats: ["one_to_one", "small_group", "event"], maxTravelMinutes: 45, onlyWhenAsked: false };
     await this.sql.begin(async tx => {
       await tx`select set_config('app.app_id', ${rt.app.id}, true)`;
       await tx`insert into network.members (app_id, id, person_id, name, home_city, home_area, account_status, age, prefs, joined_at)
-        values (${rt.app.id}, ${m.memberId}, ${m.personId}, ${info.firstName}, ${rt.city}, ${info.neighborhood ?? null}, 'active', ${info.age}, ${prefs}::jsonb, ${now})
+        values (${rt.app.id}, ${m.memberId}, ${m.personId}, ${info.firstName}, ${homeCity}, ${info.neighborhood ?? null}, 'active', ${info.age}, ${prefs}::jsonb, ${now})
         on conflict (id) do update set person_id = excluded.person_id, name = excluded.name, home_city = excluded.home_city, home_area = excluded.home_area,
           account_status = 'active', age = excluded.age, joined_at = excluded.joined_at, opted_out = false`;
-      if (info.neighborhood) await tx`insert into network.presence (app_id, member_id, city, type, areas) values (${rt.app.id}, ${m.memberId}, ${rt.city}, 'home', ${tx.array([info.neighborhood], "TEXT")})`;
+      if (info.neighborhood || info.homeCity) await tx`insert into network.presence (app_id, member_id, city, type, areas) values (${rt.app.id}, ${m.memberId}, ${homeCity}, 'home', ${tx.array(info.neighborhood ? [info.neighborhood] : [], "TEXT")})`;
       // slop dates by distance from a zip (a coarse cell; agent_private, never shown).
       if (info.zip && rt.app.id === "slop") {
         await tx`insert into network.facets (app_id, id, member_id, kind, value, tags, privacy_scope, provenance, source, confidence, status, valid_from)
@@ -664,10 +674,10 @@ export class NetworkService implements RuntimeHost {
 
   /** A web join (POST /api/join): the member row, then the welcome through the normal send path. */
   private async joined(ctx: JoinHookContext) {
-    const rt = this.runtimeFor(ctx.app.id);
+    const rt = this.runtimeForHome(ctx.app.id, ctx.input.homeCity ?? this.runtimeFor(ctx.app.id)?.city ?? "");
     if (!rt) throw new Error(`no network runs for ${ctx.app.id}`);
     if (ctx.membership.state !== "active") return; // waitlist or a recycled number: staff first
-    await this.createMember(rt, ctx.membership, { age: ctx.age, firstName: ctx.input.firstName, neighborhood: ctx.input.neighborhood, interests: ctx.input.interests, zip: ctx.input.zip });
+    await this.createMember(rt, ctx.membership, { age: ctx.age, firstName: ctx.input.firstName, homeCity: ctx.input.homeCity, neighborhood: ctx.input.neighborhood, interests: ctx.input.interests, zip: ctx.input.zip });
     await rt.unitOfWork(n => { n.welcomeJoined(ctx.membership.memberId); });
   }
 
@@ -680,7 +690,7 @@ export class NetworkService implements RuntimeHost {
     const ms = (await this.people.memberships(personId)).filter(m => m.state !== "removed" && m.state !== "invited" && (scope === "global" || m.app === app.id));
     for (const m of ms) {
       if (m.state === "active") await this.people.putMembership({ ...m, state: "paused" });
-      const rt = this.runtimeFor(m.app);
+      const rt = await this.runtimeOfMember(m.app, m.memberId);
       if (!rt || (skip && skip.rt === rt && skip.memberId === m.memberId)) continue;
       await rt.unitOfWork(async n => {
         await n.onInbound({ id: `stop:${m.memberId}:${this.clock.now()}`, memberId: m.memberId, body: "STOP", ts: this.clock.now(), channel: "imessage", keyword: "STOP" });
@@ -697,7 +707,7 @@ export class NetworkService implements RuntimeHost {
 
   /** Leave one app: the Network forgets the member, then the save deletes every row that names them (the forget path). */
   private async forget(app: AppInfo, memberId: MemberId) {
-    const rt = this.runtimeFor(app.id);
+    const rt = await this.runtimeOfMember(app.id, memberId) ?? this.runtimeFor(app.id);
     if (!rt) return;
     await rt.unitOfWork(n => { n.forgetMember(memberId); rt.unit.forget.add(memberId); });
   }
@@ -859,7 +869,16 @@ export class NetworkService implements RuntimeHost {
     if (!this.inboundTurn()) await this.lineAdapter()?.engaged?.(ev.from);
     const route = await this.route(ev, o.app);
     const app = this.apps[route.app];
-    const rt = this.runtimeFor(route.app);
+    const joinedMember = (await this.memberApps(ev.from)).find(m => m.app === route.app);
+    let rt = joinedMember && await this.runtimeOfMember(route.app, joinedMember.memberId);
+    if (!rt) {
+      for (const candidate of this.runtimes.values()) {
+        if (candidate.app.id !== route.app) continue;
+        await candidate.identities();
+        if (candidate.memberOf(ev.from)) { rt = candidate; break; }
+      }
+    }
+    rt ||= this.runtimeFor(route.app);
     if (!rt) { this.log(`[inbound] no network runs for ${route.app}; not stored`); return "no_network"; }
     // Only the routed network's address book (each runtime refreshes its own inside its units of work).
     await rt.identities();
@@ -901,7 +920,8 @@ export class NetworkService implements RuntimeHost {
     const leavingId = leaveTarget(ev.text, this.apps);
     const leaving = leavingId ? this.apps[leavingId] : undefined;
     if (leaving && e164) {
-      const lrt = this.runtimeFor(leaving.id);
+      const leaveMember = (await this.memberApps(ev.from)).find(m => m.app === leaving.id);
+      const lrt = (leaveMember && await this.runtimeOfMember(leaving.id, leaveMember.memberId)) || this.runtimeFor(leaving.id);
       if (lrt && lrt !== rt) await lrt.identities();
       const lid = lrt?.memberOf(ev.from);
       if (lrt && lid) {
@@ -1024,7 +1044,7 @@ export class NetworkService implements RuntimeHost {
    */
   async submitProfile(personId: string, appId: AppId, e164: string, text: string): Promise<"accepted" | "not_member"> {
     const m = await this.people.getMembership(personId, appId);
-    const rt = this.runtimeFor(appId);
+    const rt = m && await this.runtimeOfMember(appId, m.memberId);
     if (!m || !rt || !["active", "onboarding"].includes(m.state)) return "not_member";
     if (await this.accounts.banned(e164)) return "not_member";
     const t = this.clock.now(), rowId = `agent_${randomUUID()}`;
@@ -1191,9 +1211,14 @@ export class NetworkService implements RuntimeHost {
     if (p && p.app !== app.id) p = undefined;
     const said = parseJoinText(ev.text, this.appWords(), !!p);
     const age = said.age ?? p?.age ?? undefined, name = said.name ?? p?.name ?? undefined;
+    const homeCity = said.homeCity ?? p?.homeCity;
     const ask = invited ? c.invited(app.minJoinAge) : c.joinAsk(app.minJoinAge);
     if (age === undefined) {
-      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: name ?? null, age: null, at: t });
+      if (said.invalidHome) {
+        await this.direct(rt, ev.from, "Tell me your home city: New York or San Francisco / Bay Area. Include your first name and age.", `sys:${rowId}`, "reply");
+        return "join_asked";
+      }
+      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: name ?? null, age: null, ...(homeCity ? { homeCity } : {}), at: t });
       const { count } = await this.people.hit(`join_ask:${app.id}:${key}`, DAY, t);
       if (count <= 3) await this.direct(rt, ev.from, ask, `sys:${rowId}`, "reply");
       return "join_asked";
@@ -1208,8 +1233,12 @@ export class NetworkService implements RuntimeHost {
       this.log(`[inbound] under the join age for ${app.id}: declined, nothing stored`);
       return "under_age";
     }
+    if (said.invalidHome) {
+      await this.direct(rt, ev.from, "Tell me your home city: New York or San Francisco / Bay Area. Include your first name and age.", `sys:${rowId}`, "reply");
+      return "join_asked";
+    }
     if (!name) {
-      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: null, age, at: t });
+      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: null, age, ...(homeCity ? { homeCity } : {}), at: t });
       await this.direct(rt, ev.from, c.joinNeedName, `sys:${rowId}`, "reply");
       return "join_asked";
     }
@@ -1222,12 +1251,13 @@ export class NetworkService implements RuntimeHost {
     const others = (await this.people.memberships(who.id)).filter(m => m.app !== app.id && m.state !== "removed" && m.state !== "invited");
     const membership: Membership = {
       app: app.id, personId: who.id, memberId: existing?.state === "invited" ? existing.memberId : `${app.id}_${randomUUID()}`,
-      state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: name, profile: {}, joinedAt: t, leftAt: null,
+      state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: name, profile: homeCity ? { homeCity } : {}, joinedAt: t, leftAt: null,
     };
     await this.people.putMembership(membership);
     await this.accounts.recordConsent({ e164, app: app.id, line: ev.to ? normalizeAddress(ev.to) : null, state: "opted_in", source: "inbound_message", wording: ask, ref: rowId, at: this.consentAt(ev) });
     if (membership.state !== "active") return "joined";
-    await this.createMember(rt, membership, { age: Math.min(age, check.effective ?? age), firstName: name });
+    rt = this.runtimeForHome(app.id, homeCity ?? rt.city) ?? rt;
+    await this.createMember(rt, membership, { age: Math.min(age, check.effective ?? age), firstName: name, homeCity });
     // Their answer is their first message: the Network welcomes them as a reply to it.
     await this.memberMessage(rt, membership.memberId, ev, rowId, undefined);
     // A person who uses another app with this number: the link notice (never names the other app).
@@ -1259,17 +1289,17 @@ export class NetworkService implements RuntimeHost {
       // A member under 18 (or of unknown age) is never enrolled in slop.date from this question; they may
       // still join it on its own site (founder decision 1), where matching and photos stay 18+.
       for (const id of wants.filter(a => a !== "slop" || (lowest !== undefined && lowest >= 18))) {
-        const app = this.apps[id], art = this.runtimeFor(id)!;
+        const app = this.apps[id], homeCity = homeCityOf(ntwrk.profile.homeCity), art = this.runtimeForHome(id, homeCity ?? this.runtimeFor(id)!.city)!;
         const existing = await this.people.getMembership(person.id, id);
         if (existing && existing.state !== "removed" && existing.state !== "invited") { joined.push(app); continue; }
         if (lowest === undefined || !joinAgeCheck(lowest, lowest, app).ok) continue;
         const m: Membership = {
           app: id, personId: person.id, memberId: existing?.state === "invited" ? existing.memberId : `${id}_${randomUUID()}`,
-          state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: ntwrk.firstName, profile: {}, joinedAt: t, leftAt: null,
+          state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: ntwrk.firstName, profile: homeCity ? { homeCity } : {}, joinedAt: t, leftAt: null,
         };
         await this.people.putMembership(m);
         await this.accounts.recordConsent({ e164, app: id, state: "opted_in", source: "looking_for", wording: asked, ref: `${rowId}:${id}`, at: this.consentAt(ev) });
-        if (m.state === "active") await this.createMember(art, m, { age: lowest, firstName: ntwrk.firstName ?? "there" });
+        if (m.state === "active") await this.createMember(art, m, { age: lowest, firstName: ntwrk.firstName ?? "there", homeCity });
         joined.push(app);
       }
     }
@@ -1438,7 +1468,7 @@ export class NetworkService implements RuntimeHost {
     if (!personId) return { members: [{ rt, memberId }] };
     const members: { rt: NetworkRuntime; memberId: MemberId }[] = [];
     for (const m of await this.people.memberships(personId)) {
-      const r = this.runtimeFor(m.app);
+      const r = await this.runtimeOfMember(m.app, m.memberId);
       if (r && m.state !== "removed" && m.state !== "invited") members.push({ rt: r, memberId: m.memberId as MemberId });
     }
     if (!members.some(x => x.rt === rt && x.memberId === memberId)) members.push({ rt, memberId });
@@ -1642,7 +1672,7 @@ export class NetworkService implements RuntimeHost {
     const turnId = `msg:${b.channel}:${b.messageId}`;
     const [original] = await this.sql`select sender_hash,response from platform.inbound where id=${turnId} and status='done'`;
     if (!original || original.response?.outcome !== "open" || original.response.app !== app || original.response.memberId !== memberId) return json({error:"turn_scope_invalid",retryable:false},403);
-    const who = await this.accounts.byPhoneHash(original.sender_hash), rt = this.runtimeFor(app);
+    const who = await this.accounts.byPhoneHash(original.sender_hash), rt = await this.runtimeOfMember(app, memberId);
     if (!who || !rt) return json({error:"membership_unavailable",retryable:false},403);
     const authorized = async () => (await this.accounts.activeMembership(rt.app,{e164:who.e164,personId:who.person.id}))?.membership.memberId === memberId;
     if (!await authorized()) return json({error:"membership_unavailable",retryable:false},403);
@@ -1775,7 +1805,7 @@ export class NetworkService implements RuntimeHost {
           await tx`select set_config('app.app_id', ${claim.response.app}, true)`;
           await tx`update network.messages set status=${status} where app_id=${claim.response.app} and inbound_id=${id} and id in ${tx(b.replyIds as string[])} and status in ('collected','send_unknown')`;
           // The same replies in the line's thread history (the leak guard's core-14 check reads accepted ones).
-          const lrt = this.runtimeFor(claim.response.app);
+          const lrt = claim.response.memberId ? await this.runtimeOfMember(claim.response.app, claim.response.memberId) : this.runtimeFor(claim.response.app);
           if (lrt?.adapter instanceof BlooioAdapter) await lrt.adapter.queue.collectedReceipt(tx, b.replyIds as string[], b.outcome as "accepted" | "unknown" | "rejected", this.clock.now());
         }
         await tx`update platform.inbound set receipt_hash=${digest},receipt=${b}::jsonb where id=${id}`;
@@ -1783,7 +1813,7 @@ export class NetworkService implements RuntimeHost {
       });
       if (result.status===200 && b.outcome==="accepted") {
         const [claim]=await this.sql`select response from platform.inbound where id=${id}`;
-        if (isAppId(claim?.response?.app)) await this.runtimeFor(claim.response.app)?.projectNotifications();
+        if (isAppId(claim?.response?.app)) await (claim.response.memberId ? await this.runtimeOfMember(claim.response.app, claim.response.memberId) : this.runtimeFor(claim.response.app))?.projectNotifications();
       }
       return result;
     }
@@ -1821,7 +1851,7 @@ export class NetworkService implements RuntimeHost {
       // canonical join prompt gets the signed account-free onboarding reason.
       const accountEligible = policyAllowed && age !== undefined && canJoin(age);
       const onboarding = policyAllowed && age === undefined && outcome === "join_asked" && !turn.memberId;
-      const rt = turn.app ? this.runtimeFor(turn.app) : undefined;
+      const rt = turn.app ? (turn.memberId ? await this.runtimeOfMember(turn.app, turn.memberId) : this.runtimeFor(turn.app)) : undefined;
       const binding = rt && turn.memberId ? await this.accounts.activeMembership(rt.app, {e164: input.from, personId: person?.id ?? null}) : undefined;
       // activeMembership owns the known join-age check; first contact, STOP, leave and policy denials create no service counter.
       if (accountEligible && binding && binding.membership.memberId === turn.memberId) await this.lineAdapter()?.engaged?.(input.from);
@@ -1836,7 +1866,7 @@ export class NetworkService implements RuntimeHost {
     });
     if (result.status === 200 && result.body && typeof result.body === "object" && "outcome" in result.body && result.body.outcome === "open") {
       const cached = result.body as Extract<TurnResponse, {outcome: "open"}>;
-      const rt = this.runtimeFor(cached.app);
+      const rt = await this.runtimeOfMember(cached.app, cached.memberId);
       const binding = rt && await this.accounts.activeMembership(rt.app, {e164: input.from, personId: null});
       const current = binding?.membership.memberId === cached.memberId ? await rt!.sharedContext(cached.memberId) : null;
       if (!current || !isDeepStrictEqual(current, cached.context)) return json({error: "turn_context_changed", retryable: false}, 409);
@@ -1847,7 +1877,7 @@ export class NetworkService implements RuntimeHost {
         const current = await admission(handled.app ?? undefined);
         if (!current.allowed || current.age !== undefined) return json({error: "turn_onboarding_changed", retryable: false}, 409);
       }
-      if (handled.app) await this.runtimeFor(handled.app)?.projectNotifications();
+      if (handled.app) await (handled.memberId ? await this.runtimeOfMember(handled.app, handled.memberId) : this.runtimeFor(handled.app))?.projectNotifications();
     }
     return json(result.body, result.status);
   }

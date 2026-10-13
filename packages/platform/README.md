@@ -29,6 +29,12 @@ The schema is in `packages/observatory/db/migrations/` (0003 platform, 0004 app 
 
 Leaving an app, deleting everything and the join rollback call `notify.forget_data` (packages/notify/db/retention.sql, migration 9003) in the same transaction. Every database a `PgPeopleStore` uses must run the full migrate list, Notify included (9002 and 9003); on a database without them, leave and join rollback fail.
 
+An optional explicit `homeCity` is `nyc` or `sf`; exact city labels such as
+"New York" and "Bay Area" normalize to those values. An entire neighborhood
+field that names one of these regions also states home. Conflicting explicit
+values are invalid. ZIP codes and other neighborhood names never infer a city.
+Omitted home keeps the legacy runtime default.
+
 ## Public API
 
 `createPublicApi({ store, otp, turnstile, hostMap, onJoin, onStop, onForget, onExport, ... })` returns a fetch handler. It answers `undefined` for paths outside `/api`, so any `Bun.serve` can mount it. The Network service mounts it on `PLATFORM_API_PORT` (8790) and supplies the hooks.
@@ -39,7 +45,7 @@ Leaving an app, deleting everything and the join rollback call `notify.forget_da
 | `POST /api/auth/otp/verify {phone, code}` | `{ok:true}` and a session cookie, or `400 invalid_code` |
 | `POST /api/auth/logout` | `{ok:true}`, cookie cleared |
 | `GET /api/me` | 401, or `{app, phoneMasked, membership, smsOptedIn, canJoin, reason?}` |
-| `POST /api/join {firstName, age, neighborhood?, zip?, interests?, about?, consent: {sms: true, wording? , version?}}` | `{ok:true, membership}` or `400 under_age \| invite_only \| invalid \| consent_wording`. The wording must be the app's canonical text (or its version) from `GET /api/app`. |
+| `POST /api/join {firstName, age, homeCity?, neighborhood?, zip?, interests?, about?, consent: {sms: true, wording? , version?}}` | `{ok:true, membership}` or `400 under_age \| invite_only \| invalid \| consent_wording`. The wording must be the app's canonical text (or its version) from `GET /api/app`. |
 | `POST /api/me/share {fromApp, fields}` | Stores a base-profile grant (`first_name`, `city`, `age_band`, `interests`). No site shows it. |
 | `GET /api/me/export` | This app's data only |
 | `POST /api/me/share/revoke {fromApp}` | Revokes a grant. The same answer either way. |

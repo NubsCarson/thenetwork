@@ -1,4 +1,3 @@
-import { SQL } from "bun";
 // The whole platform in one process, wired as in production (docs/runbook-platform.md section 2):
 //   four site servers (the built static files, and the production router code, deploy/router.ts, for
 //   /api/*, /mcp, /oauth/* and /.well-known/oauth-*)  ->  the shared backend (deploy/backend
@@ -7,6 +6,7 @@ import { SQL } from "bun";
 // Nothing is sent: the channel adapter is dry-run and OTP codes come from a fake provider that keeps
 // them. One SimClock drives the service, the router signatures, the backend's proxy check and the MCP
 // server, so the tests can move time (OTP gaps, the daily engine run) and every signature check agrees.
+import { SQL } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,11 +88,16 @@ export interface Stack {
 
 let stackSequence = 0;
 
-export async function startStack(o: { privateOpenAiApps?: readonly AppId[]; slopCity?: "sf" } = {}): Promise<Stack> {
+export async function startStack(o: { privateOpenAiApps?: readonly AppId[]; slopCity?: "sf"; extraNetwork?: "ntwrk:sf" } = {}): Promise<Stack> {
   const url = await migratedDb(`e2e_${++stackSequence}`);
-  if (o.slopCity) {
+  if (o.slopCity || o.extraNetwork) {
     const setup = new SQL({ url, max: 1 });
-    await setup`update platform.networks set id='slop:sf', city='sf' where app_id='slop'`;
+    if (o.slopCity) {
+      await setup`update platform.networks set id='slop:sf', city='sf' where app_id='slop'`;
+    }
+    if (o.extraNetwork) {
+      await setup`insert into platform.networks (id,app_id,city,matching_enabled) values (${o.extraNetwork},'ntwrk','sf',false)`;
+    }
     await setup.close();
   }
   const photoDir = mkdtempSync(join(tmpdir(), "e2e-photos-"));

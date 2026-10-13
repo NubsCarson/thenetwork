@@ -25,7 +25,7 @@ Results: [results/2026-10-07-network-consent.md](results/2026-10-07-network-cons
 | `harness/` | Simulation only: experiment arms, NYC scenarios, the friend factory for invites. It reads hidden truth, so it is not production code. |
 | `service/` | The production runtime: one network per row of `platform.networks`, the tick loops, the inbound webhooks, the public API for the sites, the channel adapters (dry-run by default) and the staff API, on Postgres ([service/README.md](../packages/network/service/README.md); section 1.2) |
 
-Scope: New York City only. The Network runs the engine with `cities: ["nyc"]` and ignores members whose home city is not NYC. One `ConsentNetwork` serves one app in one city (section 1.3).
+Scope: New York City matching only. The engine keeps `cities: ["nyc"]` and excludes non-NYC homes. Conversation ownership follows the registered app/home runtime; an unserved home uses the app's default runtime without changing home or adding travel presence. Snapshot and address-book ownership agree, so another registered runtime does not also process the member. Out-of-market members can complete personal profile intake and receive single-player agent context; this does not activate matching in their home city.
 
 ### 1.1 Stored state
 

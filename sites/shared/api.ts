@@ -98,6 +98,7 @@ export interface Me {
 }
 
 export interface JoinBody {
+  homeCity?: "nyc" | "sf";
   firstName: string;
   age: number;
   neighborhood?: string;
