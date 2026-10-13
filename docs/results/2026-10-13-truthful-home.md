@@ -54,11 +54,49 @@ without a blocking finding; the reviewer did not rerun tests.
 
 ## Remaining qualification
 
-Browser before/after capture and video are pending. The prepared before preview
-uses base join HTML with candidate shared JavaScript and backend, so it proves
-rendering only. The original backend overwrite is established by the separate
-HTTP/Postgres RED receipt. The after preview uses the candidate UI and backend.
-Hosted full CI, real-client acceptance and deployment remain separate work.
+Actual Chrome 154.0.8037.98 browser qualification completed with fictional invited adults and fake OTPs.
+No model or live provider was used.
+
+- [Before video](media/2026-10-13-truthful-home-before.mp4): actual base `61d5663` UI, shared JavaScript, router and backend.
+  The normal form states Theo, age32 and Bay Area. Join succeeds; separate actual SQL receipt shows NYC home with Bay Area text.
+- [After video](media/2026-10-13-truthful-home-after.mp4): actual candidate `948dc6b` UI/backend.
+  The form selects San Francisco/Bay Area and states Bay Area. Join succeeds; Settings shows Active; actual SQL shows SF home.
+
+The base uses a loopback-only Origin adapter for localhost cookie isolation. The two stacks use different fictional phone identities.
+Recorded browser frames retain their capture order and time intervals, capped at eight seconds between frames for review.
+An initial base-HTML-only preview was superseded and is not used as the broken-backend video.
+The browser blocked the base's separate `/evidence` page. It was not retried or bypassed; SQL evidence remains separate.
+The same-command HTTP/PostgreSQL RED/GREEN case additionally uses identical final inputs without the new selector.
+
+### Reproduce the browser flow
+
+For a clean checkout, install the documented Bun1.4.2 dependencies and PostgreSQL16 prerequisites.
+Use a fresh, owned local database. Do not reuse another operator's database or occupied ports.
+The standard dry-run platform command below uses the documented local dev cluster on54339.
+
+```sh
+NETWORK_DATABASE_URL=postgres://$USER@127.0.0.1:54339/truthful_home_demo bun run platform:dev
+curl -fsS -X POST 'http://127.0.0.1:4848/invite?app=ntwrk' \
+  -H 'Authorization: Bearer dev-admin' -H 'Content-Type: application/json' \
+  --data '{"phone":"+12125550177"}'
+```
+
+Open `http://127.0.0.1:5101/settings`. Use the fictional number above and its `[otp dev]` code from the service log.
+Then open `http://127.0.0.1:5101/join` and follow the fields below.
+Run base and candidate separately with fresh owned database names; preserve both receipts.
+The captured videos instead use the same synthetic E2E harness on dynamically allocated ports.
+
+Use the normal synthetic E2E harness with isolated migrated PostgreSQL and fake OTP delivery.
+Serve the exact base and candidate site builds with separate sessions and fictional 555-01xx invitations.
+Open each site's `/settings`. Enter its fictional phone, request its fake code, and verify it.
+Open `/join`. Enter Theo, age32, and neighborhood Bay Area.
+On the candidate, choose San Francisco/Bay Area in the optional home-city selector.
+Submit only in the isolated synthetic test environment. Expect the normal joined screen and Active settings.
+Read the synthetic member and home-presence rows. The base stores NYC; the candidate stores SF.
+Do not use real accounts, real numbers, live adapters, or production endpoints for this reproduction.
+
+Full hosted CI, real agent-client acceptance and legitimate deployment remain separate work.
+The browser videos prove the synthetic web flow, not deployed real-user signup or canonical Cloud history.
 
 Two alternatives were rejected: rejecting out-of-market joins would prevent the
 authorized personal-profile flow; removing every city filter would duplicate
