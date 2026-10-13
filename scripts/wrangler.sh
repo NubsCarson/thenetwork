@@ -22,7 +22,9 @@ set -euo pipefail
 # Pinned: the same version as WRANGLER_VERSION in .github/workflows/deploy-sites.yml (a test checks).
 WRANGLER_VERSION="4.136.3"
 
-export XDG_CONFIG_HOME="$HOME/.config/wrangler-ntwrk"
+if [ "${NTWRK_WRANGLER_USE_OS_SESSION:-}" != "1" ]; then
+  export XDG_CONFIG_HOME="$HOME/.config/wrangler-ntwrk"
+fi
 # The ntwrk.party Cloudflare account id comes from the environment (.env or the shell); no default here.
 if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then echo "wrangler.sh: set CLOUDFLARE_ACCOUNT_ID (the ntwrk.party Cloudflare account id)" >&2; exit 2; fi
 export CLOUDFLARE_ACCOUNT_ID

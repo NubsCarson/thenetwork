@@ -308,7 +308,7 @@ NTWRK_ALLOW_DEPLOY=1 scripts/wrangler.sh pages deploy sites/slop.date/dist --pro
 Notes:
 
 - The projects exist: never pass `--force`, never create them again.
-- `scripts/wrangler.sh` uses its own wrangler login (`XDG_CONFIG_HOME=$HOME/.config/wrangler-ntwrk`). Its account defaults to the ntwrk.party account (all four projects). It refuses `pages deploy`, `pages secret put` and every other change without `NTWRK_ALLOW_DEPLOY=1`, and `deploy --dry-run --no-dry-run` counts as a real deploy (the last value wins, as in wrangler).
+- `scripts/wrangler.sh` defaults to its dedicated login (`XDG_CONFIG_HOME=$HOME/.config/wrangler-ntwrk`). For the approved Pages migration into the existing Eliza account, set `NTWRK_WRANGLER_USE_OS_SESSION=1` to preserve Wrangler's normal OS session discovery (including an operator-supplied `XDG_CONFIG_HOME`). No credential is copied and no new authorization is requested. `CLOUDFLARE_ACCOUNT_ID` is still required and selects the target account. The session opt-in does not authorize changes: `pages deploy`, `pages secret put` and every other mutation still require `NTWRK_ALLOW_DEPLOY=1`; `deploy --dry-run --no-dry-run` still counts as a real deploy (the last value wins).
 
 ### 3.2 Roll back a site
 
