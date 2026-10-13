@@ -25,7 +25,8 @@ test("Wrangler OS-session opt-in preserves context and account/deploy guards", (
     expect(explicit.stdout.toString()).toContain(`context=${root}/operator-context`);
     expect(explicit.stdout.toString()).toContain("account=synthetic-account");
     expect(invoke({ NTWRK_WRANGLER_USE_OS_SESSION: "1", CLOUDFLARE_ACCOUNT_ID: "" }).exitCode).toBe(2);
-    for (const choice of [{}, { NTWRK_WRANGLER_USE_OS_SESSION: "1" }]) {
+    const choices: Record<string, string>[] = [{}, { NTWRK_WRANGLER_USE_OS_SESSION: "1" }];
+    for (const choice of choices) {
       const denied = invoke(choice, ["pages", "deploy", "synthetic-dist"]);
       expect(denied.exitCode).toBe(3);
       expect(denied.stdout.toString()).toBe("");
