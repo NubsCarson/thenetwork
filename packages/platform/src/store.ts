@@ -41,7 +41,9 @@ export interface OtpChallenge {
   id: string; app: AppId; e164: string; provider: string;
   /** The provider's id for this verification (Twilio Verify's VerificationSid): the check is bound to it, so a code sent for one app never verifies another. */
   providerRef: string | null;
-  /** Set only when this server checks the code (the dev provider). */
+  /** Private routing metadata for a Blooio status-only lookup. Legacy challenges have none. */
+  providerChatId?: string | null;
+  /** Set only when this server checks the code (Blooio or the dev provider). */
   codeHash: string | null;
   attempts: number; createdAt: number; expiresAt: number; consumedAt: number | null;
 }
