@@ -493,13 +493,15 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
 
   // ---------------------------------------------------------------- token, revoke
 
-  async function issuePair(client: OAuthClient, grant: Grant, scopes: Scope[], resource: string) {
+  function tokenPair(client: OAuthClient, grant: Grant, scopes: Scope[], resource: string) {
     const at = now();
     const access = randomToken("ntwa_"), refresh = randomToken("ntwr_");
     const base = { grantId: grant.id, clientId: client.id, app: grant.app, resource, scopes, createdAt: at, revokedAt: null, rotatedAt: null };
-    await store.putToken({ ...base, hash: sha256hex(access), kind: "access", expiresAt: Math.min(at + ttl.accessMs, grant.expiresAt) });
-    await store.putToken({ ...base, hash: sha256hex(refresh), kind: "refresh", expiresAt: Math.min(at + ttl.refreshMs, grant.expiresAt) });
-    return { access_token: access, token_type: "Bearer", expires_in: Math.floor(Math.min(ttl.accessMs, grant.expiresAt - at) / 1000), refresh_token: refresh, scope: scopes.join(" ") };
+    const tokens: readonly [Token, Token] = [
+      { ...base, hash: sha256hex(access), kind: "access", expiresAt: Math.min(at + ttl.accessMs, grant.expiresAt) },
+      { ...base, hash: sha256hex(refresh), kind: "refresh", expiresAt: Math.min(at + ttl.refreshMs, grant.expiresAt) },
+    ];
+    return { tokens, response: { access_token: access, token_type: "Bearer", expires_in: Math.floor(Math.min(ttl.accessMs, grant.expiresAt - at) / 1000), refresh_token: refresh, scope: scopes.join(" ") } };
   }
 
   async function token(c: Ctx): Promise<Response> {
@@ -533,9 +535,10 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       const grant = await store.getGrant(ac.grantId);
       if (!grant || grant.revokedAt !== null || grant.expiresAt <= at) return bad("invalid_grant");
       if (!(await customSlopEligible(c, client, grant.personId, grant.phoneKey))) return bad("invalid_grant");
-      const pair = await issuePair(client, grant, ac.scopes, ac.resource);
+      const pair = tokenPair(client, grant, ac.scopes, ac.resource);
+      for (const token of pair.tokens) await store.putToken(token);
       await store.audit({ at, kind: "token_issued", clientId: client.id, grantId: grant.id, app: c.app.id, detail: ac.scopes.join(" ") });
-      return json(200, pair);
+      return json(200, pair.response);
     }
 
     if (grantType === "refresh_token") {
@@ -549,15 +552,14 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       if (!asked || !asked.every(s => t.scopes.includes(s))) return bad("invalid_scope");
       const res = form.get("resource");
       if (res && canonicalResource(res, c.issuer) !== t.resource) return bad("invalid_target");
-      if (t.rotatedAt !== null || !(await store.rotateRefresh(t.hash, at))) {
+      const pair = tokenPair(client, grant, asked, t.resource);
+      if (t.rotatedAt !== null || !(await store.rotateRefresh(t.hash, at, pair.tokens, { at, kind: "token_refreshed", clientId: client.id, grantId: grant.id, app: c.app.id, detail: asked.join(" ") }))) {
         // A refresh token used twice: someone else has a copy. End the whole grant.
         await revokeGrant(t.grantId, at);
         await store.audit({ at, kind: "refresh_replay", clientId: client.id, grantId: t.grantId, app: c.app.id, detail: "grant revoked" });
         return bad("invalid_grant");
       }
-      const pair = await issuePair(client, grant, asked, t.resource);
-      await store.audit({ at, kind: "token_refreshed", clientId: client.id, grantId: grant.id, app: c.app.id, detail: asked.join(" ") });
-      return json(200, pair);
+      return json(200, pair.response);
     }
     return bad("unsupported_grant_type");
   }
