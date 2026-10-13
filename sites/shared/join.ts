@@ -97,6 +97,7 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
     const body = {
       firstName,
       age,
+      ...(str("homeCity") ? { homeCity: str("homeCity") as "nyc" | "sf" } : {}),
       ...(str("neighborhood") ? { neighborhood: str("neighborhood") } : {}),
       ...(zip ? { zip } : {}),
       ...(interests.length ? { interests } : {}),

@@ -1,6 +1,7 @@
 // People, phones, memberships and the rest of the platform schema (migration 0003), behind one
 // interface with two implementations: MemoryPeopleStore (tests, dev) and PgPeopleStore (pg-store.ts).
 // Times are epoch milliseconds. Phone numbers are E.164.
+import type { City } from "../../core/src/types.ts";
 import type { AppId } from "./apps.ts";
 import type { ConsentEvent, ConsentLast } from "./consent.ts";
 import { lastEvents } from "./consent.ts";
@@ -11,7 +12,7 @@ export type MembershipState = "invited" | "onboarding" | "active" | "paused" | "
 export interface Person { id: string; lowestAge: number | null; createdAt: number; deletedAt: number | null }
 /** A text flow waiting for the person's next message (platform.pending_texts): a join that has asked for name and age, The Network's "what are you looking for?", a SHARE offer, or the photo consent asked after a photo by text. */
 export type PendingKind = "join" | "looking_for" | "share" | "photo_consent";
-export interface PendingText { phoneHash: string; kind: PendingKind; app: AppId; name: string | null; age: number | null; at: number }
+export interface PendingText { phoneHash: string; kind: PendingKind; app: AppId; name: string | null; age: number | null; homeCity?: City; at: number }
 export type PhoneHold = "recycled_number";
 export interface PhoneIdentity {
   e164: string; personId: string; verifiedAt: number; method: PhoneMethod; lastSeenAt: number | null;
