@@ -77,6 +77,12 @@ function render(root: HTMLElement, me: Me): void {
   when(root, "no-membership", !m);
   when(root, "stopped", stopped);
   when(root, "not-stopped", live && !stopped);
+  when(root, "has-home", live && !!me.home);
+  const homeForm = root.querySelector<HTMLFormElement>('form[data-form="home"]');
+  if (homeForm && me.home) {
+    homeForm.querySelector<HTMLSelectElement>('[name="homeCity"]')!.value = me.home.homeCity;
+    homeForm.querySelector<HTMLInputElement>('[name="neighborhood"]')!.value = me.home.neighborhood ?? "";
+  }
   showStep(root, "account");
   // Parts of the page that need the account (the slop photos section, photos.ts) load on this event.
   root.dispatchEvent(new CustomEvent("account", { detail: me }));
@@ -167,6 +173,17 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
   await refresh(root);
   ready(root);
   mountNumberChange(root, () => refresh(root));
+  const homeForm = root.querySelector<HTMLFormElement>('form[data-form="home"]');
+  homeForm?.addEventListener("submit", async e => {
+    e.preventDefault();
+    setError(homeForm, "");
+    const city = homeForm.querySelector<HTMLSelectElement>('[name="homeCity"]')!.value;
+    const neighborhood = homeForm.querySelector<HTMLInputElement>('[name="neighborhood"]')!.value.trim();
+    const res = await busy(homeForm, () => api.home(city, neighborhood));
+    if (!res.ok) return setError(homeForm, message(root, res.error));
+    await refresh(root);
+    status(root, "Your home is updated for this app. Your messaging choices are unchanged.");
+  });
 
   const act = (name: string, fn: (btn: HTMLButtonElement) => Promise<void>) =>
     root.querySelectorAll<HTMLButtonElement>(`[data-action="${name}"]`).forEach((b) =>

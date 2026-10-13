@@ -85,6 +85,13 @@ other POST with 415. `sites/test/contract.test.ts` runs the client against `crea
 `POST /api/join` sends `consent.wording` as the exact text of the `[data-consent-wording]`
 element. A test checks that it equals the platform's canonical text for the app.
 
+Settings reads the signed-in member's `home` from `GET /api/me` and corrects it with
+`POST /api/me/home {homeCity, neighborhood?}`. Only the current app/member is editable;
+the city uses the existing NYC/San Francisco Bay Area names. This updates the membership
+profile, member home and home presence together, preserving messages, consent and trips.
+A move between distinct registered conversation runtimes returns `409 home_runtime_conflict`
+without changing data; moving serialized conversation state is outside this correction.
+
 peon.biz sends the "Looking for work" or "Hiring for a team" choice as the first item of
 `interests` (`looking-for-work` or `hiring`), because the contract has no field for it.
 

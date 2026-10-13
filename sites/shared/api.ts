@@ -14,6 +14,7 @@ export type ApiError =
   | "invalid_code"
   | "invalid_phone"
   | "invalid"
+  | "home_runtime_conflict"
   | "turnstile"
   | "under_age"
   | "invite_only"
@@ -32,6 +33,7 @@ export const PLATFORM_ERRORS: Record<string, ApiError> = {
   invalid_code: "invalid_code",
   invalid_phone: "invalid_phone",
   invalid: "invalid",
+  home_runtime_conflict: "home_runtime_conflict",
   turnstile: "turnstile",
   under_age: "under_age",
   invite_only: "invite_only",
@@ -95,6 +97,7 @@ export interface Me {
   smsOptedIn?: boolean;
   reason?: string;
   participation?: Participation;
+  home?: { homeCity: "nyc" | "sf"; neighborhood?: string };
 }
 
 export interface JoinBody {
@@ -152,6 +155,7 @@ export const api = {
   exportData: () => call<unknown>("GET", "/api/me/export"),
   stop: () => call<unknown>("POST", "/api/me/stop"),
   resume: () => call<unknown>("POST", "/api/me/resume"),
+  home: (homeCity: string, neighborhood?: string) => call<unknown>("POST", "/api/me/home", { homeCity, ...(neighborhood ? { neighborhood } : {}) }),
   remove: (scope: "app" | "all") => call<unknown>("POST", "/api/me/delete", { scope }),
   phoneStart: (phone: string) => call<{ ok: true }>("POST", "/api/me/phone/start", { phone }),
   phoneConfirm: (code: string) => call<{ ok: true; phoneMasked: string }>("POST", "/api/me/phone/confirm", { code }),
@@ -179,6 +183,7 @@ export const MESSAGES: Record<ApiError, string> = {
   rate_limited: "Too many tries for now. Please wait an hour, then try again.",
   invalid_code: "That code is not right, or it has expired. Check the text and try again.",
   invalid: "Some details are missing or not valid. Check the fields and try again.",
+  home_runtime_conflict: "This home change needs help from support to keep your conversation intact. Your home has not changed.",
   under_age: "You must be 13 or older to join. We did not save your details.",
   invite_only: "You can join only with an invitation.",
   unauthorized: "Your session ended. Please log in again.",
