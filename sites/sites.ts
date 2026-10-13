@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { mcpUrlFor, skillsConfig } from "./skills.config.ts";
-import { agentRow } from "./agents.ts";
+import { agentRow, promptFor } from "./agents.ts";
 import { RUN_WORKER_FIRST } from "../deploy/router.ts";
 import { stagingSiteOrigins } from "../packages/platform/src/apps.ts";
 
@@ -215,7 +215,11 @@ export async function buildSite(s: Site, outdir: string, env: Record<string, str
     writeSkills(s, outdir, env);
     // The landing page's logo row (agents.ts), before fill() so a staging build rewrites its links too.
     const home = join(outdir, "index.html");
-    writeFileSync(home, readFileSync(home, "utf8").replaceAll("{{AGENTS}}", agentRow(s, skillsConfig(env).TEXT_LINE)));
+    const skill = skillText(s.skill, env);
+    const version = (Bun.YAML.parse(skill.match(/^---\n([\s\S]*?)\n---/)![1]!) as { metadata: { version: string } }).metadata.version;
+    writeFileSync(home, readFileSync(home, "utf8")
+      .replace(/(<code data-prompt>)[\s\S]*?(<\/code>)/, (_all, open, close) => `${open}${promptFor(s, version)}${close}`)
+      .replaceAll("{{AGENTS}}", agentRow(s, skillsConfig(env).TEXT_LINE, version)));
     const problems: string[] = [];
     for (const f of walk(outdir)) {
       const full = join(outdir, f);
