@@ -17,8 +17,8 @@ import type { PeopleStore } from "./store.ts";
 
 export interface OtpProvider {
   readonly name: string;
-  /** Send a code to the number. Return the code only when this server must check its hash, and the provider's id for the verification. */
-  send(e164: string, app: AppInfo): Promise<{ code?: string; ref?: string }>;
+  /** Send a code to the number. Return the code only when this server must check its hash, and the private provider locators for the verification. */
+  send(e164: string, app: AppInfo): Promise<{ code?: string; ref?: string; chatId?: string }>;
   /** Check a code that the provider holds (Twilio Verify), bound to the verification `ref` when there is one. Not used when send returned the code. */
   check?(e164: string, code: string, ref?: string | null): Promise<boolean>;
 }
@@ -95,7 +95,7 @@ export class BlooioOtpProvider implements OtpProvider {
     try {
       const receipt = await this.client.send({ from: this.from, to: e164, text: `${app.name} verification code: ${code}. Expires in 10 minutes. Do not share this code.`, idempotencyKey: `otp:${randomUUID()}` });
       if (receipt.status === "failed") throw new Error("rejected");
-      return { code, ref: receipt.providerMessageId };
+      return { code, ref: receipt.providerMessageId, chatId: receipt.chatId };
     } catch {
       // Provider errors can echo the request. Never pass them to the ordinary OTP log.
       throw new Error("Blooio OTP send was not confirmed; no fallback was attempted");
@@ -181,9 +181,9 @@ export class OtpService {
       return limited();
     }
     try {
-      const { code, ref } = await this.provider.send(e164, app);
+      const { code, ref, chatId } = await this.provider.send(e164, app);
       await this.store.putChallenge({
-        app: app.id, e164, provider: this.provider.name, providerRef: ref ?? null, codeHash: code ? keyedHash(this.opts.hashKey, `${app.id}:${e164}:${code}`) : null,
+        app: app.id, e164, provider: this.provider.name, providerRef: ref ?? null, providerChatId: chatId ?? null, codeHash: code ? keyedHash(this.opts.hashKey, `${app.id}:${e164}:${code}`) : null,
         attempts: 0, createdAt: at, expiresAt: at + L.ttlMs, consumedAt: null,
       });
     } catch (e) {

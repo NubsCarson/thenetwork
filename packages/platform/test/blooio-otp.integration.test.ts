@@ -1,6 +1,7 @@
 // Real local HTTP provider transport and Postgres OTP lifecycle. No external provider is called.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
+import { BlooioClient } from "@thenetwork/blooio";
 import { APPS } from "../src/apps.ts";
 import { createPublicApi } from "../src/api.ts";
 import { bootConfigProblems } from "../src/env.ts";
@@ -18,6 +19,7 @@ let url: string, sql: SQL, store: PgPeopleStore, server: ReturnType<typeof Bun.s
 let mode = "queued", sequence = 0, now = Date.UTC(2026, 9, 13), phoneSequence = 10;
 const requests: Array<{ code: string; key: string; from: string; to: string }> = [];
 const logs: string[] = [];
+const statusRequests: string[] = [];
 const phone = () => `+121255501${++phoneSequence}`;
 const provider = () => new BlooioOtpProvider(ENV, { baseUrl: `http://127.0.0.1:${server.port}/v4`, timeoutMs: 50 });
 const service = (p: OtpProvider) => new OtpService(store, p, { hashKey: KEY, now: () => now, log: line => logs.push(line) });
@@ -26,7 +28,14 @@ describe.skipIf(!pgAvailable)("Blooio OTP via local HTTP and Postgres", () => {
   beforeAll(async () => {
     url = await migratedDb("blooio_otp"); sql = new SQL({ url }); store = new PgPeopleStore(sql);
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
-      expect(new URL(req.url).pathname).toBe("/v4/messages");
+      const path = new URL(req.url).pathname;
+      if (req.method === "GET") {
+        expect(path).toMatch(/^\/v4\/chats\/chat_message_\d+\/messages\/message_\d+\/status$/);
+        expect(req.headers.get("authorization")).toBe("Bearer synthetic-key");
+        statusRequests.push(path);
+        return Response.json({ status: "delivered" });
+      }
+      expect(path).toBe("/v4/messages");
       expect(req.headers.get("authorization")).toBe("Bearer synthetic-key");
       const body = await req.json() as { text: string; from: string; to: string };
       const code = /\b\d{6}\b/.exec(body.text)![0];
@@ -34,7 +43,8 @@ describe.skipIf(!pgAvailable)("Blooio OTP via local HTTP and Postgres", () => {
       if (mode === "timeout") { await Bun.sleep(120); return Response.json({ id: "late", status: "queued" }); }
       if (mode === "reject") return Response.json({ error: { message: `echoed code ${code} phone ${body.to} key synthetic-key`, code: "denied" } }, { status: 403 });
       if (mode === "missing-id") return Response.json({ status: "queued" });
-      return Response.json({ id: `message_${++sequence}`, ...(mode === "missing-status" ? {} : { status: mode }) }, { status: 201 });
+      const id = `message_${++sequence}`;
+      return Response.json({ id, ...(mode === "no-chat" ? {} : { chat_id: `chat_${id}` }), ...(mode === "missing-status" ? {} : { status: mode === "no-chat" ? "queued" : mode }) }, { status: 201 });
     } });
   });
   afterAll(async () => { server?.stop(true); await sql?.close(); if (url) await dropDb(url); });
@@ -74,6 +84,32 @@ describe.skipIf(!pgAvailable)("Blooio OTP via local HTTP and Postgres", () => {
       expect((await post("/api/auth/otp/verify", { phone: p, code: sent.code })).status).toBe(400);
       expect(logs.join("\n")).not.toContain(sent.code);
     } finally { http.stop(true); }
+  });
+
+  test("private receipt survives Postgres and enables a status-only lookup without exposing it in auth responses", async () => {
+    mode = "queued";
+    const p = phone();
+    const api = createPublicApi({ store, otp: provider(), env: { PLATFORM_ENV: "dev" }, hashKey: KEY, now: () => now, minStartMs: 0, minVerifyMs: 0, log: l => logs.push(l) });
+    const response = await api.fetch(new Request("http://localhost:5103/api/auth/otp/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ phone: p }) }));
+    expect(response!.status).toBe(200);
+    const c = await new PgPeopleStore(sql).latestChallenge("peon", p);
+    expect(c).toHaveProperty("providerChatId", `chat_${c!.providerRef}`);
+    const [row] = await sql`select provider_ref, provider_chat_id from platform.otp_challenges where id = ${c!.id}`;
+    const client = new BlooioClient({ apiKey: ENV.BLOOIO_API_KEY, baseUrl: `http://127.0.0.1:${server.port}/v4` });
+    const count = requests.length;
+    expect(await client.getMessageStatus(row!.provider_chat_id, row!.provider_ref)).toEqual({ status: "delivered" });
+    expect(statusRequests.at(-1)).toBe(`/v4/chats/chat_${c!.providerRef}/messages/${c!.providerRef}/status`);
+    expect(requests.length).toBe(count);
+    const text = await response!.text();
+    for (const privateValue of [c!.providerRef!, `chat_${c!.providerRef}`, requests.at(-1)!.code, ENV.BLOOIO_API_KEY]) {
+      expect(text).not.toContain(privateValue);
+      expect(logs.join("\n")).not.toContain(privateValue);
+    }
+    mode = "no-chat";
+    const legacy = phone();
+    await service(provider()).start(APPS.peon, legacy, legacy);
+    expect(await store.latestChallenge("peon", legacy)).toHaveProperty("providerChatId", null);
+    expect(await service(provider()).verify("peon", legacy, requests.at(-1)!.code, legacy)).toBe(true);
   });
 
   test("expiry, wrong attempts, rate limits and provider switches cannot consume another provider's challenge", async () => {

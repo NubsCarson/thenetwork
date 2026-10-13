@@ -22,7 +22,7 @@ const consent = (r: Row): ConsentEvent => ({
 });
 const pendingRow = (r: Row): PendingText => ({ phoneHash: r.phone_hash, kind: r.kind, app: r.app_id, name: r.name ?? null, age: r.age ?? null, at: ms(r.at)! });
 const challenge = (r: Row): OtpChallenge => ({
-  id: String(r.id), app: r.app_id, e164: r.e164, provider: r.provider, providerRef: r.provider_ref ?? null, codeHash: r.code_hash ?? null, attempts: r.attempts,
+  id: String(r.id), app: r.app_id, e164: r.e164, provider: r.provider, providerRef: r.provider_ref ?? null, providerChatId: r.provider_chat_id ?? null, codeHash: r.code_hash ?? null, attempts: r.attempts,
   createdAt: ms(r.created_at)!, expiresAt: ms(r.expires_at)!, consumedAt: ms(r.consumed_at),
 });
 const phoneChange = (r: Row): PhoneChange => ({
@@ -179,8 +179,8 @@ export class PgPeopleStore implements PeopleStore {
   }
 
   async putChallenge(c: Omit<OtpChallenge, "id">) {
-    const [r] = await this.sql`insert into platform.otp_challenges (app_id, e164, provider, provider_ref, code_hash, attempts, created_at, expires_at, consumed_at)
-      values (${c.app}, ${c.e164}, ${c.provider}, ${c.providerRef}, ${c.codeHash}, ${c.attempts}, ${ts(c.createdAt)}, ${ts(c.expiresAt)}, ${ts(c.consumedAt)}) returning id`;
+    const [r] = await this.sql`insert into platform.otp_challenges (app_id, e164, provider, provider_ref, provider_chat_id, code_hash, attempts, created_at, expires_at, consumed_at)
+      values (${c.app}, ${c.e164}, ${c.provider}, ${c.providerRef}, ${c.providerChatId ?? null}, ${c.codeHash}, ${c.attempts}, ${ts(c.createdAt)}, ${ts(c.expiresAt)}, ${ts(c.consumedAt)}) returning id`;
     return String(r!.id);
   }
   async latestChallenge(app: AppId, e164: string) {
