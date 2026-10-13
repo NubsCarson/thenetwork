@@ -41,7 +41,7 @@ import { canJoin } from "../../core/src/policy.ts";
 import { CostLedger, costRatesFromEnv, PgCostSink } from "./cost.ts";
 import { BlooioAdapter, type ChannelAdapter, type DirectKind, type Outbound } from "./channel.ts";
 import { APPS, isAppId, keywordApp, lookingFor, POWERED_BY, type AppId, type AppInfo } from "../../platform/src/apps.ts";
-import { Accounts, homeCityOf, type AccountHooks, type JoinHookContext, type MemberHookContext } from "../../platform/src/accounts.ts";
+import { Accounts, homeCityOf, type AccountHooks, type HomeInput, type JoinHookContext, type MemberHookContext } from "../../platform/src/accounts.ts";
 import { joinAgeCheck } from "../../platform/src/age.ts";
 import { detectKeyword as platformKeyword, keywordEvent, leaveTarget, resolveConsent, stopScope, type StopScope } from "../../platform/src/consent.ts";
 import { devShortcutsAllowed, isProduction, platformEnv, type Env } from "../../platform/src/env.ts";
@@ -767,6 +767,48 @@ export class NetworkService implements RuntimeHost {
     });
   }
 
+  private async memberHome(ctx: MemberHookContext): Promise<HomeInput | null> {
+    const [row] = await this.runtimeFor(ctx.app.id)?.scoped(tx => tx`select home_city, home_area from network.members where app_id=${ctx.app.id} and id=${ctx.memberId} and person_id=${ctx.personId}::uuid`) ?? [];
+    const homeCity = homeCityOf(row?.home_city);
+    return homeCity ? { homeCity, ...(row.home_area ? { neighborhood: row.home_area } : {}) } : null;
+  }
+
+  private async correctHome(ctx: MemberHookContext, input: HomeInput): Promise<HomeInput | "runtime_change_unsupported" | null> {
+    // Hold this app's runtime locks while checking ownership and updating the home, so an inbound
+    // unit cannot observe a partial correction. Cross-runtime moves are refused below.
+    const runtimes = [...this.runtimes.values()].filter(r => r.app.id === ctx.app.id).sort((a, b) => a.id.localeCompare(b.id));
+    const locked = (i: number): Promise<HomeInput | "runtime_change_unsupported" | null> => i < runtimes.length
+      ? runtimes[i]!.store.withLock(() => locked(i + 1))
+      : this.sql.begin(async tx => {
+        await tx`select set_config('app.app_id', ${ctx.app.id}, true)`;
+        const [member] = await tx`select m.home_city, m.home_area, pm.profile from network.members m
+          join platform.memberships pm on pm.app_id=m.app_id and pm.member_id=m.id and pm.person_id=m.person_id
+          join platform.people p on p.id=m.person_id
+          join platform.phone_identities ph on ph.person_id=p.id and ph.e164=${ctx.e164}
+          where m.app_id=${ctx.app.id} and m.id=${ctx.memberId} and m.person_id=${ctx.personId}::uuid
+            and pm.state in ('active','onboarding') and pm.review is null and p.deleted_at is null and ph.hold is null
+            and m.account_status not in ('invited','removed','restricted')
+            and not exists(select 1 from platform.bans b where b.person_id=p.id or b.phone_hash=${this.phoneKey(ctx.e164)})
+          for update of m, pm, p, ph`;
+        if (!member) return null;
+        // Moving between existing runtime stores needs a full conversation-state transfer. Never
+        // silently abandon that state; an unserved home still uses the same default runtime.
+        if (this.runtimeForHome(ctx.app.id, member.home_city) !== this.runtimeForHome(ctx.app.id, input.homeCity)) return "runtime_change_unsupported";
+        const homes = await tx`select city, areas from network.presence where app_id=${ctx.app.id} and member_id=${ctx.memberId} and type='home'`;
+        const area = input.neighborhood ?? null, areas = area ? [area] : [];
+        const profile = { ...member.profile, homeCity: input.homeCity };
+        if (area) profile.neighborhood = area; else delete profile.neighborhood;
+        if (member.home_city === input.homeCity && member.home_area === area && JSON.stringify(member.profile) === JSON.stringify(profile)
+          && homes.length === 1 && homes[0]!.city === input.homeCity && JSON.stringify(homes[0]!.areas) === JSON.stringify(areas)) return input;
+        await tx`update platform.memberships set profile=${profile}::jsonb where app_id=${ctx.app.id} and person_id=${ctx.personId}::uuid`;
+        await tx`update network.members set home_city=${input.homeCity}, home_area=${area} where app_id=${ctx.app.id} and id=${ctx.memberId}`;
+        await tx`delete from network.presence where app_id=${ctx.app.id} and member_id=${ctx.memberId} and type='home'`;
+        await tx`insert into network.presence(app_id,member_id,city,type,areas) values (${ctx.app.id},${ctx.memberId},${input.homeCity},'home',${tx.array(areas,"TEXT")})`;
+        return input;
+      });
+    return locked(0);
+  }
+
   /**
    * The public API the four sites call (/api/*). Built on first use: outside dev it needs an OTP
    * provider (OTP_PROVIDER=twilio) and Turnstile (TURNSTILE_SECRET_KEY); the dev shortcuts refuse.
@@ -778,6 +820,8 @@ export class NetworkService implements RuntimeHost {
       now: () => this.clock.now(), log: this.log, ...this.apiOptions, ...this.hooks(), photos: this.photos,
       participation: ctx => this.memberParticipation(ctx.app, ctx.memberId),
       onResume: ctx => this.resumeMember(ctx.app, ctx.memberId),
+      home: ctx => this.memberHome(ctx),
+      onHome: (ctx, input) => this.correctHome(ctx, input),
       // Each code Twilio Verify sends is a cost row (cost.ts).
       otp: this.cost.meterOtp(this.apiOptions?.otp ?? otpProviderFromEnv(this.env)),
     });

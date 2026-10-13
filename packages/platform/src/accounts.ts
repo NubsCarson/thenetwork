@@ -45,6 +45,19 @@ export function homeCityOf(value: unknown): Extract<City, "nyc" | "sf"> | undefi
   return undefined;
 }
 
+export interface HomeInput { homeCity: Extract<City, "nyc" | "sf">; neighborhood?: string }
+
+/** An own-home edit cannot carry another member's identity or unrelated profile fields. */
+export function parseHome(body: Record<string, unknown>): HomeInput | undefined {
+  if (Object.keys(body).some(k => !["homeCity", "neighborhood"].includes(k))) return undefined;
+  const homeCity = homeCityOf(body.homeCity);
+  if (!homeCity) return undefined;
+  if (body.neighborhood === undefined) return { homeCity };
+  if (typeof body.neighborhood !== "string" || !body.neighborhood.trim() || body.neighborhood.trim().length > 80) return undefined;
+  const neighborhood = body.neighborhood.trim(), coarse = homeCityOf(neighborhood);
+  return coarse && coarse !== homeCity ? undefined : { homeCity, neighborhood };
+}
+
 export interface JoinInput {
   firstName: string;
   age: number;

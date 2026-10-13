@@ -13,7 +13,7 @@
 //   const api = createPublicApi({ store, otp, turnstile });
 //   Bun.serve({ fetch: async (req, server) => (await api.fetch(req, server)) ?? new Response("not found", { status: 404 }) });
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { type AccountHooks, Accounts, type MemberHookContext, parseJoin, publicMembership, type Who } from "./accounts.ts";
+import { type AccountHooks, Accounts, type HomeInput, type MemberHookContext, parseHome, parseJoin, publicMembership, type Who } from "./accounts.ts";
 import { APPS, type AppId, type AppInfo, appForHost, DEFAULT_HOST_MAP, DEV_HOST_MAP, isAppId, publicAppInfo, siteHosts, stagingSiteOrigins } from "./apps.ts";
 import { devShortcutsAllowed, type Env } from "./env.ts";
 import { type OtpProvider, OtpService, type OtpLimits } from "./otp.ts";
@@ -64,6 +64,9 @@ export interface PublicApiOptions extends AccountHooks {
   participation?: (ctx: MemberHookContext) => Promise<MemberParticipation | null> | MemberParticipation | null;
   /** POST /api/me/resume: end the member's availability pause (never a STOP: messaging consent stays as it is). 404 without it. */
   onResume?: (ctx: MemberHookContext) => Promise<void> | void;
+  /** Own current home, and an atomic correction. Neither changes messaging consent or membership. */
+  home?: (ctx: MemberHookContext) => Promise<HomeInput | null>;
+  onHome?: (ctx: MemberHookContext, input: HomeInput) => Promise<HomeInput | "runtime_change_unsupported" | null>;
   /** GET /api/demo: a synthetic, scrubbed replay for the landing page. 404 without it. */
   demo?: (app: AppId) => unknown | Promise<unknown>;
   log?: (s: string) => void;
@@ -437,12 +440,28 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
           const c = await accounts.canJoin(app, who);
           const live = c.reason === "member" && c.membership && c.person ? c.membership : undefined;
           const participation = live && o.participation ? await o.participation({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }) : null;
+          const home = live && o.home && (who.personId === null || who.personId === live.personId)
+            ? await o.home({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }) : null;
           return json(200, {
             app: appId, phoneMasked: maskPhone(who.e164), membership: publicMembership(c.membership),
             smsOptedIn: c.reason !== "review" && await accounts.optedIn(appId, who.e164),
             canJoin: c.canJoin, ...(c.reason && c.reason !== "member" ? { reason: c.reason } : {}),
             ...(participation ? { participation } : {}),
+            ...(home ? { home } : {}),
           });
+        });
+
+      case "POST /api/me/home":
+        if (!o.onHome) return json(404, { ok: false, error: "not_found" });
+        return withSession(async who => {
+          const input = parseHome(b);
+          if (!input) return json(400, { ok: false, error: "invalid" });
+          const c = await accounts.canJoin(app, who);
+          const live = c.reason === "member" && c.person && c.membership;
+          if (!live || (who.personId !== null && who.personId !== live.personId) || !["active", "onboarding"].includes(live.state)) return json(403, { ok: false, error: "review" });
+          const home = await o.onHome!({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }, input);
+          if (home === "runtime_change_unsupported") return json(409, { ok: false, error: "home_runtime_conflict" });
+          return home ? json(200, { ok: true, home }) : json(403, { ok: false, error: "review" });
         });
 
       case "POST /api/me/resume":

@@ -99,6 +99,97 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
     }, T);
   });
 
+  test("a signed-in member corrects a legacy home atomically without changing identity, consent or history", async () => {
+    const local = await startStack();
+    const db = new SQL({ url: local.url, max: 2 });
+    try {
+      const phone = newPhone(), browser = new Browser();
+      await local.staff("/apps/ntwrk/invite", { phone });
+      await signIn(local, "ntwrk", phone, browser);
+      const info = await (await local.site("ntwrk", "/api/app")).json() as any;
+      expect((await local.site("ntwrk", "/api/join", { browser, json: { firstName: "Theo", age: 32, homeCity: "nyc", neighborhood: "Astoria", consent: { sms: true, version: info.consent.version } } })).status).toBe(200);
+      const [member] = await db`select * from network.members where app_id='ntwrk'`;
+      // Reproduce the actual pre-fix join shape: explicit region retained, runtime city used as home.
+      await db`update network.members set home_area='Bay Area' where id=${member.id}`;
+      await db`update network.presence set areas=ARRAY['Bay Area'] where member_id=${member.id} and type='home'`;
+      await db`update platform.memberships set profile='{"neighborhood":"Bay Area","about":"I enjoy climbing."}'::jsonb where member_id=${member.id}`;
+      const client = await connectMcp(local, "ntwrk", phone, { browser });
+      expect(toolData(await rpc(local, "ntwrk", "/mcp", "tools/call", { name: "submit_profile", arguments: { about: "I enjoy climbing and coffee." } }, client.token!.access_token)).submitted).toBe(true);
+      const before = await (await local.site("ntwrk", "/api/me/export", { browser })).json() as any;
+      const [trip] = await db`insert into network.presence(app_id,member_id,city,type,areas,from_at,to_at) values ('ntwrk',${member.id},'sf','temporary','{}',${new Date(local.clock.now()-DAY)},${new Date(local.clock.now()+DAY)}) returning *`;
+      const correction = { homeCity: "Bay Area", neighborhood: "Bay Area" };
+      const changed = await local.site("ntwrk", "/api/me/home", { browser, json: correction });
+      expect(changed.status).toBe(200);
+      expect((await changed.json() as any).home).toEqual({ homeCity: "sf", neighborhood: "Bay Area" });
+      expect((await (await local.site("ntwrk", "/api/me", { browser })).json() as any).home).toEqual({ homeCity: "sf", neighborhood: "Bay Area" });
+      const after = await (await local.site("ntwrk", "/api/me/export", { browser })).json() as any;
+      expect(after.network.member).toEqual({ ...before.network.member, home_city: "sf" });
+      expect(after.membership).toEqual({ ...before.membership, profile: { ...before.membership.profile, homeCity: "sf" } });
+      expect(after.consent).toEqual(before.consent);
+      expect(after.network.messages).toEqual(before.network.messages);
+      const homes = await db`select * from network.presence where member_id=${member.id} and type='home'`;
+      expect(homes.length).toBe(1);
+      expect(homes[0]!.city).toBe("sf");
+      expect(homes[0]!.areas).toEqual(["Bay Area"]);
+      expect((await db`select * from network.presence where id=${trip.id}`)[0]).toEqual(trip);
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: correction })).status).toBe(200);
+      expect(await db`select * from network.presence where member_id=${member.id} and type='home'`).toEqual(homes);
+      const otherPhone = newPhone(), otherBrowser = new Browser();
+      await local.staff("/apps/ntwrk/invite", { phone: otherPhone });
+      await signIn(local, "ntwrk", otherPhone, otherBrowser);
+      expect((await local.site("ntwrk", "/api/join", { browser: otherBrowser, json: { firstName: "Mira", age: 31, homeCity: "nyc", consent: { sms: true, version: info.consent.version } } })).status).toBe(200);
+      const [other] = await db`select * from network.members where app_id='ntwrk' and id<>${member.id}`;
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { ...correction, memberId: other.id } })).status).toBe(400);
+      expect((await db`select * from network.members where id=${other.id}`)[0]).toEqual(other);
+      const rt = await local.svc.runtimeOfMember("ntwrk", member.id);
+      expect(await rt!.sharedContext(member.id)).toMatchObject({ city: "sf", singlePlayer: true });
+      expect((await rt!.unitOfWork(n => n.engineInput(local.clock.now()))).members.some(m => m.id === member.id)).toBe(false);
+      expect(toolData(await rpc(local, "ntwrk", "/mcp", "tools/call", { name: "check_status", arguments: {} }, client.token!.access_token)).status).toBe("active");
+      expect((await local.site("ntwrk", "/api/me/home", { json: correction })).status).toBe(401);
+      expect((await local.site("friends", "/api/me/home", { browser, json: correction })).status).toBe(401);
+      for (const extra of [{ memberId: member.id }, { personId: member.person_id }, { age: 40 }, { app: "friends" }]) {
+        expect((await local.site("ntwrk", "/api/me/home", { browser, json: { ...correction, ...extra } })).status).toBe(400);
+      }
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "nyc", neighborhood: "Bay Area" } })).status).toBe(400);
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "unknown" } })).status).toBe(400);
+      expect((await local.site("ntwrk", "/api/me/home", { browser, headers: { origin: local.sites.friends.origin }, json: correction })).status).toBe(403);
+
+      // Failure after profile/member updates must roll the entire correction back.
+      await db`create function public.reject_home_fixture() returns trigger language plpgsql as $$ begin if NEW.type='home' then raise exception 'synthetic home failure'; end if; return NEW; end $$`;
+      await db`create trigger reject_home_fixture before insert on network.presence for each row execute function public.reject_home_fixture()`;
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "nyc", neighborhood: "Astoria" } })).status).toBe(500);
+      expect((await db`select home_city from network.members where id=${member.id}`)[0]!.home_city).toBe("sf");
+      expect((await db`select profile from platform.memberships where member_id=${member.id}`)[0]!.profile.homeCity).toBe("sf");
+      expect((await db`select city from network.presence where member_id=${member.id} and type='home'`).map((x:any)=>x.city)).toEqual(["sf"]);
+      await db`drop trigger reject_home_fixture on network.presence`;
+      await db`drop function public.reject_home_fixture()`;
+
+      // Current phone ownership is checked again, not inferred from a still-valid cookie.
+      await db`update platform.phone_identities set hold='recycled_number' where e164=${phone}`;
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "nyc" } })).status).toBe(403);
+      expect((await db`select home_city from network.members where id=${member.id}`)[0]!.home_city).toBe("sf");
+    } finally { await db.close(); await local.close(); }
+  }, T);
+
+  test("home correction refuses a move between existing conversation stores without changing the member", async () => {
+    const local = await startStack({ extraNetwork: "ntwrk:sf" });
+    const db = new SQL({ url: local.url, max: 2 });
+    try {
+      const phone = newPhone(), browser = new Browser();
+      await local.staff("/apps/ntwrk/invite", { phone });
+      await signIn(local, "ntwrk", phone, browser);
+      const info = await (await local.site("ntwrk", "/api/app")).json() as any;
+      expect((await local.site("ntwrk", "/api/join", { browser, json: { firstName: "Mira", age: 31, homeCity: "nyc", neighborhood: "Astoria", consent: { sms: true, version: info.consent.version } } })).status).toBe(200);
+      const before = await (await local.site("ntwrk", "/api/me/export", { browser })).json();
+      const states = await db`select id,state from network.network_state order by id`;
+      const response = await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "sf", neighborhood: "Bay Area" } });
+      expect(response.status).toBe(409);
+      expect((await response.json() as any).error).toBe("home_runtime_conflict");
+      expect(await (await local.site("ntwrk", "/api/me/export", { browser })).json()).toEqual(before);
+      expect(await db`select id,state from network.network_state order by id`).toEqual(states);
+    } finally { await db.close(); await local.close(); }
+  }, T);
+
   test("explicit home survives invited join and out-of-market profile intake without NYC presence", async () => {
     const local = await startStack();
     const db = new SQL({ url: local.url, max: 2 });
