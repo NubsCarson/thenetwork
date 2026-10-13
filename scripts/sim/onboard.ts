@@ -39,7 +39,7 @@ function valueOf(p: SlopOnboarding, f: string): unknown {
     case "gender": return p.gender?.value;
     case "seeks": return p.seeks?.value;
     case "ageRange": return p.ageRange?.value;
-    case "distance": { const d = p.distance?.value; return d?.mode === "multi" ? { mode: "multi", markets: [...d.markets].sort() } : d; }
+    case "distance": { const d = p.distance?.value; return d?.mode === "multi" ? { ...d, markets: [...d.markets].sort() } : d; }
     case "location": return p.location?.value.known ? (p.location.value.area ?? p.location.value.zip) : undefined;
     case "goal": return p.goal?.value;
     case "dealbreakers": return p.dealbreakers.map(d => d.value).sort();

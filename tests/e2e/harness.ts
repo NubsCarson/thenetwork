@@ -88,11 +88,16 @@ export interface Stack {
 
 let stackSequence = 0;
 
-export async function startStack(o: { privateOpenAiApps?: readonly AppId[]; extraNetwork?: "ntwrk:sf" } = {}): Promise<Stack> {
+export async function startStack(o: { privateOpenAiApps?: readonly AppId[]; slopCity?: "sf"; extraNetwork?: "ntwrk:sf" } = {}): Promise<Stack> {
   const url = await migratedDb(`e2e_${++stackSequence}`);
-  if (o.extraNetwork) {
-    const setup = new SQL({url,max:1});
-    await setup`insert into platform.networks (id,app_id,city,matching_enabled) values (${o.extraNetwork},'ntwrk','sf',false)`;
+  if (o.slopCity || o.extraNetwork) {
+    const setup = new SQL({ url, max: 1 });
+    if (o.slopCity) {
+      await setup`update platform.networks set id='slop:sf', city='sf' where app_id='slop'`;
+    }
+    if (o.extraNetwork) {
+      await setup`insert into platform.networks (id,app_id,city,matching_enabled) values (${o.extraNetwork},'ntwrk','sf',false)`;
+    }
     await setup.close();
   }
   const photoDir = mkdtempSync(join(tmpdir(), "e2e-photos-"));
