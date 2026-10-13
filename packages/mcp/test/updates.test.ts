@@ -65,10 +65,10 @@ describe("get_updates", () => {
     expect(linked.map(l => l.active)).toEqual([true, false]);
   });
 
-  test("listed with only app and update_token, read-only", async () => {
+  test("listed with only app and update_token, with seen and activity mutations disclosed", async () => {
     const { e } = env();
     const t = (await rpc(e, `${origin("ntwrk.party")}/mcp`, "tools/list")).body!.result.tools.find((x: any) => x.name === "get_updates");
     expect(Object.keys(t.inputSchema.properties)).toEqual(["app", "update_token"]);
-    expect(t.annotations.readOnlyHint).toBe(true);
+    expect(t.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
   });
 });

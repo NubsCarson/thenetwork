@@ -49,10 +49,18 @@ describe.skipIf(!pgAvailable)("the single inbox end to end", () => {
     const signal = await sql`select surface, active from notify.surface_signals where person_id = ${m.person_id} and surface = 'claude'`;
     expect(signal[0]).toMatchObject({ surface: "claude", active: true });
 
+    const tool = (await rpc(st, "peon", "/mcp", "tools/list")).body!.result.tools.find((t: any) => t.name === "get_updates");
+    const unseen = await sql`select seen_at from notify.inbox_items where person_id = ${m.person_id} and app_id = 'peon'`;
+    expect(unseen[0].seen_at).toBeNull();
     const first = await updates(c.token!.access_token);
     expect(first.updates.map((u: any) => u.summary)).toEqual(["A founder in Brooklyn is hiring a designer. Interested?"]);
+    const firstUse = (await sql`select last_used_at from notify.surface_signals where person_id=${m.person_id} and surface='claude'`)[0].last_used_at;
+    st.clock.advance(1000);
     const again = await updates(c.token!.access_token);
     expect(again.updates).toEqual([]);
+    const secondUse = (await sql`select last_used_at from notify.surface_signals where person_id=${m.person_id} and surface='claude'`)[0].last_used_at;
+    expect(new Date(secondUse).getTime()).toBeGreaterThan(new Date(firstUse).getTime());
+    expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
     const seen = await sql`select seen_on from notify.inbox_items where person_id = ${m.person_id} and app_id = 'peon'`;
     expect(seen[0].seen_on).toBe("claude");
     const other = await sql`select seen_at from notify.inbox_items where person_id = ${m.person_id} and app_id = 'slop'`;

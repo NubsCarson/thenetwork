@@ -84,7 +84,8 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
         },
         additionalProperties: false,
       },
-      annotations: annotations(`My ${host.name} updates`),
+      // Reading marks items seen and every call updates the assistant's last-used time.
+      annotations: { title: `My ${host.name} updates`, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       securitySchemes: oauth,
       _meta: { securitySchemes: oauth },
     },
