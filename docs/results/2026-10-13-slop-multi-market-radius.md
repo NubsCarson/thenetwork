@@ -83,7 +83,7 @@ Actual synthetic model text, prompt hashes, usage, bundle hash, and Bun binary h
 Only the owned temporary bundle and directory were removed after collection.
 
 These two extraction cases prove the reader regression. They do not measure population quality or prove real user acceptance.
-Changed multi-step agent-client video qualification remains open. Deferred clients remain deferred.
+Actual synthetic Codex MCP client qualification and recorded terminal playback are documented below; public ChatGPT/native OAuth and personal signup acceptance remain open. Deferred clients remain deferred.
 
 This is source-level bug evidence. Real app membership and canonical Cloud account, assistant, and website history acceptance remain separate work.
 
