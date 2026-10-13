@@ -103,8 +103,36 @@ Independent stored-state readback verified 50 miles, both markets, the same pers
 
 Client exit 0, no timeout, 17.98 seconds. CLI aggregate usage: 145701 input tokens, 87168 cached input tokens, 331 output tokens. One CLI attempt is not a measured physical model-request count; that count and invoice cost are unavailable. The Network fixture made zero external provider calls and one fake local OTP send; actual Codex account model usage is separate.
 
-[Recorded terminal playback](media/2026-10-13-slop-codex-client-playback.mp4) (142484 bytes; SHA256 `dd57101be69939af1fa2dbd06a020d395e5dc21492169cf2044672a88e3528a2`) retains genuine native MCP request/result events and their recorded times. Warnings, private paths/session metadata and agent narration were omitted. It is terminal playback, not browser video or live screen capture. The complete sanitized recording is retained privately. There is no before-client video; earlier actual HTTP/PostgreSQL and real-model broken/working evidence remains separately scoped above.
+[Recorded terminal playback](media/2026-10-13-slop-codex-client-playback.mp4) (142484 bytes; SHA256 `dd57101be69939af1fa2dbd06a020d395e5dc21492169cf2044672a88e3528a2`) retains genuine native MCP request/result events and their recorded times. Warnings, private paths/session metadata and agent narration were omitted. It is terminal playback, not browser video or live screen capture. The complete sanitized recording is retained privately. The later paired comparison below adds the actual baseline recording; earlier HTTP/PostgreSQL and real-model broken/working evidence remains separately scoped above.
 
 Cleanup verified the exact owned database absent, all five owned listeners stopped, synthetic bearer retired, and existing root PostgreSQL/default database intact. No personal account/history, real OTP or production configuration changed.
 
 Client source was exact `f904e3f55b4b7db43d634853600be1cdade0f3a3`. The later local merge `df8642cf21cbce8598598d9957e5ec818fdce25f` incorporates main's truthful-home fix and preserves the radius product files byte-for-byte. Its root/sites types pass; integrated HTTP/PostgreSQL and full CI must still qualify that merged source. No deployed ChatGPT signup, personal Slop eligibility or production SF matching is claimed. OpenClaw, Hermes and Cursor remain deferred.
+
+## Same-input actual client comparison
+
+The additional baseline invocation used exact product source `61d5663b2f56cbdd2f54cc1c6bbb6d09ddd1f21d`. Its sole tracked change was test-only SF registry setup in the E2E harness (7 added lines, 1 changed line; patch SHA256 `1a997eaa67e41b541d330d9b52dab83f0e2720a34ec0ea18314a7337e2f59fde`). The extractor and onboarding product files remained byte-identical to that commit. The fixed client used `f904e3f`. Both used the same fictional Alex, age 27 facts and initial profile text, and the same three actual native MCP tool arguments; argument equality was checked from the recordings.
+
+The baseline prompt truthfully said the profile **requested** 100 miles, without claiming storage had retained100. This context sentence differed from the earlier candidate prompt; the exact correction sent to `submit_profile` was identical. Baseline prompt SHA256: `e9e22b93e9ad0035b6d612ec965ad13012c5f28421ce128d26072bcaf763ed88`. Candidate prompt SHA256: `b859b9a30f2c62097306a5585159054e0de5445a8c7d79a4b979c7b527192ebd`.
+
+| Observation | Baseline 61d | Fixed f904 |
+| --- | --- | --- |
+| Native client sequence | active → submitted:true → active | active → submitted:true → active |
+| Initial requested radius | 100 | 100 |
+| Initial durable distance | multi NYC+SF, no miles; private `max_miles:25` | multi NYC+SF, miles 100; private `max_miles:100` |
+| After exact 50-mile correction | multi NYC+SF, no miles; private `max_miles:25` | multi NYC+SF, miles 50; private `max_miles:50` |
+| Home and presence | home SF unchanged; presence empty | home SF unchanged; presence empty |
+| Mapping | own person/member/grant unchanged | own person/member/grant unchanged |
+
+These were independent fictional fixtures; no claim equates the two fixtures' IDs. This exact client input exposes silently ignored miles while retaining the markets. The earlier shorter HTTP correction exposed loss of market selection; those are separate observed cases.
+
+- [Actual client before the fix](media/2026-10-13-slop-codex-before.mp4): 22.6 seconds, 175240 bytes; SHA256 `51a7068420367a4c67f5dbf65b7b1759a22e4835e1957b29e069f4f9015a8fc1`.
+- [Actual client after the fix](media/2026-10-13-slop-codex-after.mp4): 21.4 seconds, 175427 bytes; SHA256 `2abcda6a32753a00094144a40533ede738c31f99eb50cd5946d3f536c6cadbf6`.
+
+Both videos preserve genuine recorded tool events/times and append a clearly separate panel titled **Independent stored-state readback (not MCP response)**, projected from the saved SQL qualification receipts. Private IDs/paths/session metadata, warnings and narration are omitted. Original complete sanitized casts and SQL receipts remain privately retained. No client UI, tool reply or expected failure was fabricated.
+
+Baseline CLI exit 0 in 19.957 seconds means the client calls completed; the desired stored 50-mile result failed. Baseline fixture capture exit 0 is not a product pass. Its aggregate CLI usage was 141988 input, 122496 cached input and 332 output tokens; physical model-request count and invoice cost remain unavailable. Configured `gpt-6.1-sol` / medium was preserved, with returned startup model field unavailable. There was one baseline invocation and one earlier candidate invocation, no retries.
+
+Both fixtures independently verified final SQL then removed their exact created database/listeners and retired synthetic bearers while preserving existing PostgreSQL/default database. Each fixture used one fake local OTP and zero external Network provider calls; actual Codex account model usage is separate. No real signup/profile, native OAuth login, deployed ChatGPT flow, personal history or production SF pilot acceptance is claimed.
+
+Combined product source `78859cb` subsequently passed full hosted CI 38373213177: 533 integration tests / 11196 assertions, 40 E2E tests / 555 assertions and 329/329 blocking gates. Both truthful-home cases and the multi-market radius case passed with required PostgreSQL; 14 preexisting tracked targets remain off target. This paired-recording follow-up changes only documentation/media and will receive its own normal CI before merge.
