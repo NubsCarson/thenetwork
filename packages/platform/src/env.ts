@@ -1,3 +1,4 @@
+import { otpConfigProblems } from "./otp-config.ts";
 // Environment flags shared by the platform code. Detection fails closed: the dev shortcuts (the
 // console OTP provider, the Turnstile bypass, the public dev hash key, a trusted X-Forwarded-Host,
 // cookies without Secure) run only in an environment that is declared dev. An environment that is
@@ -37,7 +38,7 @@ export const MIN_SECRET_LENGTH = 32;
 /**
  * What a production (or staging) process is missing, as one line per problem; empty when it may
  * start. Production needs real providers and every secret:
- *  - OTP_PROVIDER=twilio with TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_VERIFY_SERVICE_SID;
+ *  - explicit OTP_PROVIDER=twilio with Verify credentials, or blooio with its key and exact sender;
  *  - TURNSTILE_SECRET_KEY;
  *  - PLATFORM_PROXY_SECRET (the site routers sign the client IP and host with it), PLATFORM_HASH_KEY
  *    and PLATFORM_SESSION_SECRET, each at least 32 characters;
@@ -51,8 +52,8 @@ export function bootConfigProblems(env: Env = process.env): string[] {
   if (e === undefined) return [`PLATFORM_ENV must be one of ${PLATFORM_ENVS.join(", ")}`];
   if (e === "dev") return isProduction(env) ? ["NODE_ENV=production with PLATFORM_ENV=dev"] : [];
   const out: string[] = [];
-  if (env.OTP_PROVIDER !== "twilio") out.push("OTP_PROVIDER=twilio (the dev console provider never runs here)");
-  for (const k of ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_VERIFY_SERVICE_SID", "TURNSTILE_SECRET_KEY"]) if (!env[k]) out.push(k);
+  out.push(...otpConfigProblems(env));
+  if (!env.TURNSTILE_SECRET_KEY) out.push("TURNSTILE_SECRET_KEY");
   for (const k of ["PLATFORM_PROXY_SECRET", "PLATFORM_HASH_KEY", "PLATFORM_SESSION_SECRET"]) {
     if (!env[k]) out.push(k);
     else if (env[k]!.length < MIN_SECRET_LENGTH) out.push(`${k} (at least ${MIN_SECRET_LENGTH} characters)`);

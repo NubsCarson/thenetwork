@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@thenetwork/blooio": "workspace:*",
     "@thenetwork/core": "workspace:*"
   },
   "exports": {

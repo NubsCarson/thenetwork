@@ -118,7 +118,7 @@ Set these in **Variables**. Mark each **secret** row as a sealed variable. Never
 | `MCP_CUSTOM_CHATGPT_SLOP` | no | unset or `off` | Default off. `on` requires founder approval for the private real-account pilot at `https://slop.date/mcp`. Keep the public OpenAI plugin exclusion. |
 | `MCP_CUSTOM_CHATGPT_SLOP_PERSON_IDS` | **yes** (private account list) | unset while off | With the approved pilot on, list existing adult person IDs, separated by commas. Never log or publish them. An empty list or literal `*` entry fails startup. Entries match exact person IDs. Normal staging/production authentication checks still apply. |
 | `MCP_PRIVATE_OPENAI_APPS` | no | unset | Development-only fictional pilot. Never set it in staging or production, or combine it with the real-account pilot. |
-| `OTP_PROVIDER` | no | `twilio` | Required when deployed |
+| `OTP_PROVIDER` | no | `twilio` | Required when deployed. Reviewed alternative: explicit `blooio` with existing `BLOOIO_API_KEY` and exact `BLOOIO_FROM`; no automatic fallback. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | **yes** (all three) | Twilio Verify | Codes only. These send verification codes, not network messages. |
 | `NETWORK_SERVICE_TOKENS` | **yes** | `admin@*:<t>,reviewer@slop:<t>,...` | Staff tokens. Without them every staff route answers 401. |
 | `NETWORK_SERVICE_CONSOLE_TOKEN` | **yes** | One of the tokens above | Only if the observatory console runs |
