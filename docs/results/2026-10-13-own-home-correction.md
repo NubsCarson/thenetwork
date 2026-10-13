@@ -57,6 +57,13 @@ every failed attempt is retained privately with the passing results.
 
 ## Remaining qualification
 
+Independent UI review found a save/readback race and stale success after a failed
+readback. The follow-up keeps the form busy through POST, GET and rendering,
+rejects overlapping submissions, clears earlier success, and shows success only
+when the returned home matches the submitted city and area. Independent source
+review is clear. Sites typecheck passed again with Node 24.18.0, TypeScript 5.9.3
+and a 256 MiB heap; no additional backend test run is attributed to this UI fix.
+
 Desktop/mobile before-and-after settings captures and interaction review are
 pending. Full hosted CI and production deployment have not run for this patch.
 No real account, home, phone, provider, consent or deployment was changed.

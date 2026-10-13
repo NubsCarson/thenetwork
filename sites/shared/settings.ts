@@ -176,13 +176,22 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
   const homeForm = root.querySelector<HTMLFormElement>('form[data-form="home"]');
   homeForm?.addEventListener("submit", async e => {
     e.preventDefault();
+    if (homeForm.getAttribute("aria-busy") === "true") return;
+    status(root, "");
     setError(homeForm, "");
     const city = homeForm.querySelector<HTMLSelectElement>('[name="homeCity"]')!.value;
     const neighborhood = homeForm.querySelector<HTMLInputElement>('[name="neighborhood"]')!.value.trim();
-    const res = await busy(homeForm, () => api.home(city, neighborhood));
-    if (!res.ok) return setError(homeForm, message(root, res.error));
-    await refresh(root);
-    status(root, "Your home is updated for this app. Your messaging choices are unchanged.");
+    await busy(homeForm, async () => {
+      const res = await api.home(city, neighborhood);
+      if (!res.ok) return setError(homeForm, message(root, res.error));
+      const confirmed = await api.me();
+      if (!confirmed.ok) return setError(homeForm, message(root, confirmed.error));
+      if (confirmed.data.home?.homeCity !== city || (confirmed.data.home.neighborhood ?? "") !== neighborhood) {
+        return setError(homeForm, "Your saved home could not be confirmed. Refresh before trying again.");
+      }
+      render(root, confirmed.data);
+      status(root, "Your home is updated for this app. Your messaging choices are unchanged.");
+    });
   });
 
   const act = (name: string, fn: (btn: HTMLButtonElement) => Promise<void>) =>
