@@ -73,6 +73,7 @@
       "name": "@thenetwork/platform",
       "version": "0.0.0",
       "dependencies": {
+        "@thenetwork/blooio": "workspace:*",
         "@thenetwork/core": "workspace:*",
       },
     },

@@ -6,16 +6,18 @@
 //  - A code expires after 10 minutes. 5 wrong codes use the challenge up. Code checks are limited too:
 //    10 per number and 30 per IP per hour, across every app.
 //  - Every limit is the same whether or not the number is known (no enumeration).
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
+import { BlooioClient, resolveSenderLine, type BlooioClientOptions } from "@thenetwork/blooio";
 import { DAY, HOUR } from "../../core/src/clock.ts";
 import type { AppId, AppInfo } from "./apps.ts";
 import { devShortcutsAllowed, type Env } from "./env.ts";
+import { otpConfigProblems } from "./otp-config.ts";
 import { keyedHash, maskPhone, safeEqual } from "./phone.ts";
 import type { PeopleStore } from "./store.ts";
 
 export interface OtpProvider {
   readonly name: string;
-  /** Send a code to the number. Return the code only when this server must check it (dev), and the provider's id for the verification. */
+  /** Send a code to the number. Return the code only when this server must check its hash, and the provider's id for the verification. */
   send(e164: string, app: AppInfo): Promise<{ code?: string; ref?: string }>;
   /** Check a code that the provider holds (Twilio Verify), bound to the verification `ref` when there is one. Not used when send returned the code. */
   check?(e164: string, code: string, ref?: string | null): Promise<boolean>;
@@ -76,9 +78,37 @@ export class TwilioVerifyProvider implements OtpProvider {
   }
 }
 
-/** The provider the environment asks for: Twilio when OTP_PROVIDER=twilio, else the dev console (dev only). */
+/** Explicit alternate transport. Queued means accepted by Blooio, not delivered to the person. */
+export class BlooioOtpProvider implements OtpProvider {
+  readonly name = "blooio";
+  private readonly client: BlooioClient;
+  private readonly from: string;
+  constructor(env: Env = process.env, options: Pick<BlooioClientOptions, "fetch" | "baseUrl" | "timeoutMs"> = {}) {
+    if (env.OTP_PROVIDER !== "blooio") throw new Error("BlooioOtpProvider needs OTP_PROVIDER=blooio");
+    const problems = otpConfigProblems(env);
+    if (problems.length) throw new Error(`BlooioOtpProvider needs ${problems.join(", ")}`);
+    this.from = resolveSenderLine(env)!;
+    this.client = new BlooioClient({ ...options, apiKey: env.BLOOIO_API_KEY!, requireKnownSendStatus: true });
+  }
+  async send(e164: string, app: AppInfo) {
+    const code = sixDigits();
+    try {
+      const receipt = await this.client.send({ from: this.from, to: e164, text: `${app.name} verification code: ${code}. Expires in 10 minutes. Do not share this code.`, idempotencyKey: `otp:${randomUUID()}` });
+      if (receipt.status === "failed") throw new Error("rejected");
+      return { code, ref: receipt.providerMessageId };
+    } catch {
+      // Provider errors can echo the request. Never pass them to the ordinary OTP log.
+      throw new Error("Blooio OTP send was not confirmed; no fallback was attempted");
+    }
+  }
+}
+
+/** Explicit provider selection. No retry or fallback to another provider. The console is dev-only. */
 export function otpProviderFromEnv(env: Env = process.env): OtpProvider {
-  return env.OTP_PROVIDER === "twilio" ? new TwilioVerifyProvider(env) : new DevConsoleProvider(env);
+  if (env.OTP_PROVIDER === "twilio") return new TwilioVerifyProvider(env);
+  if (env.OTP_PROVIDER === "blooio") return new BlooioOtpProvider(env);
+  if (env.OTP_PROVIDER && env.OTP_PROVIDER !== "dev_console") throw new Error("Unknown OTP_PROVIDER");
+  return new DevConsoleProvider(env);
 }
 
 export interface OtpLimits {
@@ -170,7 +200,7 @@ export class OtpService {
     if (!(await this.store.hit(`otp:verify:ip:${keyedHash(this.opts.hashKey, ipBucket(ip))}`, HOUR, at, { limit: L.verifyPerIpPerHour })).ok) return false;
     if (!(await this.store.hit(`otp:verify:phone:${keyedHash(this.opts.hashKey, e164)}`, HOUR, at, { limit: L.verifyPerPhonePerHour })).ok) return false;
     const c = await this.store.latestChallenge(app, e164);
-    if (!c) return false;
+    if (!c || c.provider !== this.provider.name) return false;
     if (!(await this.store.claimAttempt(c.id, this.limits.maxAttempts, at))) return false;
     let ok: boolean;
     if (c.codeHash) ok = safeEqual(c.codeHash, keyedHash(this.opts.hashKey, `${app}:${e164}:${code}`));

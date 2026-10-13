@@ -60,7 +60,7 @@ The app comes from the host a site router signed (`src/proxy.ts`, `PLATFORM_PROX
 | `PLATFORM_PROXY_SECRET` | The secret the site routers sign with. Required in production (32+ characters). |
 | `PLATFORM_SESSION_SECRET` | The key for stored session hashes. Required in production (32+ characters). |
 | `PLATFORM_STOP_SCOPE` | Unset: STOP stops every app. `app`: STOP on an app's own line stops that app only. |
-| `OTP_PROVIDER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | `twilio` uses Twilio Verify; anything else uses the dev console (codes in the log; `PLATFORM_ENV=dev` only) |
+| `OTP_PROVIDER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | `twilio` uses Twilio Verify; explicit `blooio` uses the configured Blooio sender. Unset/dev_console uses the dev console in dev only; unknown values fail. |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile; without it, the dev bypass (`PLATFORM_ENV=dev` only) |
 | `CLEF_RATINGS` | The slop.date photo rater. Unset or `on`: on (founder, 2026-10-09). `off`: off; any other value also leaves it off. Off: photos still work, nothing is rated. |
 | `CLOUDFLARE_AI_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLEF_MODEL` | Workers AI for the rater. Without the token and the account id nothing is rated (status `off_env`). |
@@ -88,3 +88,23 @@ The platform's unit tests were deleted on 2026-10-08 (founder decision: simulati
 
 - Not built: the carrier lookup (VoIP, landline, recent port), Turnstile on the sites, the share UI, an engine view that reads share grants, the demo replay, and the app-specific tables (peon orgs, roles, applications; slop dating preferences; `facets.sensitive_class`).
 - Code imports `@thenetwork/platform` by relative path.
+
+### Optional Blooio OTP transport
+
+`OTP_PROVIDER=blooio` requires `BLOOIO_API_KEY` and the existing exact `BLOOIO_FROM`
+(or matching `BLOOIO_FROM_NUMBER`). No sender is selected automatically. Twilio remains
+the normal deployed configuration. This alternative uses the existing cryptographic
+six-digit code, app/phone-bound hash, ten-minute expiry, attempt/rate limits and atomic
+consumption. Verification refuses a challenge created by another provider.
+
+The code is sent directly through the canonical Blooio v4 client, outside conversation
+history and the ordinary message queue. It is never logged. A queued receipt is provider
+acceptance, not delivery. Failed, malformed or uncertain responses create no usable
+challenge and trigger no resend or Twilio fallback. An uncertain send may still arrive
+with an unusable code; the person must wait for the normal resend interval.
+
+The cost ledger records accepted requests as `otp_verify`, provider `blooio`, using
+`COST_SMS_USD` as an estimate with `pricing: sms_estimate`. Review that configured rate
+before activation. Actual billing, sender permission and delivery remain unverified.
+Controlled HTTP/Postgres tests do not establish managed Verify support or live reachability.
+An owned live code and OAuth test needs separate sender/configuration approval.

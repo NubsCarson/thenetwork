@@ -1,3 +1,4 @@
+import { otpConfigProblems } from "../../packages/platform/src/otp-config.ts";
 // The shared backend as one deployable process (docs/deploy.md). It wraps the Network service
 // (packages/network/service) for a host that gives the process one public port (Railway):
 //
@@ -81,8 +82,8 @@ export function loadConfig(e: Env = process.env, argv: string[] = []): BackendCo
   if (!databaseUrl) missing.push("DATABASE_URL (or NETWORK_DATABASE_URL)");
   const proxySecret = e.PLATFORM_PROXY_SECRET || undefined;
   if (deployed) {
-    for (const k of ["PLATFORM_HASH_KEY", "TURNSTILE_SECRET_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_VERIFY_SERVICE_SID"]) if (!e[k]) missing.push(k);
-    if (e.OTP_PROVIDER !== "twilio") missing.push("OTP_PROVIDER=twilio");
+    for (const k of ["PLATFORM_HASH_KEY", "TURNSTILE_SECRET_KEY"]) if (!e[k]) missing.push(k);
+    missing.push(...otpConfigProblems(e));
     if (!proxySecret) missing.push("PLATFORM_PROXY_SECRET");
   }
   // Deployed: migrations run as the owner, the service as a login that RLS and the grants apply to
