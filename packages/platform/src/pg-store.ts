@@ -20,7 +20,7 @@ const consent = (r: Row): ConsentEvent => ({
   e164: r.e164, app: r.app_id ?? null, line: r.line ?? null, state: r.state, source: r.source, wording: r.wording ?? null,
   wordingVersion: r.wording_version ?? null, ref: r.ref ?? null, at: ms(r.at)!,
 });
-const pendingRow = (r: Row): PendingText => ({ phoneHash: r.phone_hash, kind: r.kind, app: r.app_id, name: r.name ?? null, age: r.age ?? null, at: ms(r.at)! });
+const pendingRow = (r: Row): PendingText => ({ phoneHash: r.phone_hash, kind: r.kind, app: r.app_id, name: r.name ?? null, age: r.age ?? null, ...(r.home_city ? { homeCity: r.home_city } : {}), at: ms(r.at)! });
 const challenge = (r: Row): OtpChallenge => ({
   id: String(r.id), app: r.app_id, e164: r.e164, provider: r.provider, providerRef: r.provider_ref ?? null, providerChatId: r.provider_chat_id ?? null, codeHash: r.code_hash ?? null, attempts: r.attempts,
   createdAt: ms(r.created_at)!, expiresAt: ms(r.expires_at)!, consumedAt: ms(r.consumed_at),
@@ -255,8 +255,8 @@ export class PgPeopleStore implements PeopleStore {
   async putPending(p: PendingText) {
     await this.sql.begin(async tx => {
       if (p.kind !== "share") await tx`delete from platform.pending_texts where phone_hash = ${p.phoneHash} and kind = ${p.kind}`;
-      await tx`insert into platform.pending_texts (phone_hash, kind, app_id, name, age, at) values (${p.phoneHash}, ${p.kind}, ${p.app}, ${p.name}, ${p.age}, ${ts(p.at)})
-        on conflict (phone_hash, kind, app_id) do update set name = excluded.name, age = excluded.age, at = excluded.at`;
+      await tx`insert into platform.pending_texts (phone_hash, kind, app_id, name, age, home_city, at) values (${p.phoneHash}, ${p.kind}, ${p.app}, ${p.name}, ${p.age}, ${p.homeCity ?? null}, ${ts(p.at)})
+        on conflict (phone_hash, kind, app_id) do update set name = excluded.name, age = excluded.age, home_city = excluded.home_city, at = excluded.at`;
     });
   }
   async deletePending(phoneHash: string, kind?: PendingKind, app?: AppId) {

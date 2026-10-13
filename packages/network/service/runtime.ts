@@ -17,12 +17,13 @@
 //    network-service-2).
 //  - Nothing here reads another app's rows; the person cap across apps (service.ts) goes through a
 //    SECURITY DEFINER function that returns ids only.
+import { DAY } from "@thenetwork/core";
 import { randomUUID } from "node:crypto";
 import type { SQL } from "bun";
 import type { City, Clock, MemberId, WorldSnapshot } from "@thenetwork/core";
 import type { RunRecord } from "@thenetwork/core";
 import type { NetworkContext, SimMessage } from "@thenetwork/core";
-import { ConsentNetwork, relayDispatchCheck, type NetworkOptions, type NetworkState } from "../src/network.ts";
+import { ConsentNetwork, presentInNyc, relayDispatchCheck, type NetworkOptions, type NetworkState } from "../src/network.ts";
 import type { RelayCanonical } from "../src/relay.ts";
 import { loadRelayRows, PgStore, runStored, runTick, type NetworkStore } from "../src/store.ts";
 import { capitalWiring, type CapitalEvent } from "../src/capital.ts";
@@ -70,6 +71,7 @@ export interface RuntimeHost {
   clock: Clock;
   instance: string;
   log: (line: string) => void;
+  conversationCities?(rt: NetworkRuntime): readonly string[];
   accounts?: Pick<Accounts, "activeMembership" | "lowestAge" | "phoneHash">;
   inboundTurn?(): InboundTurn | undefined;
   collectReplies?(tx: SQL, replies: CollectedReply[]): Promise<void>;
@@ -317,7 +319,7 @@ export class NetworkRuntime {
 
   /** The snapshot and the address book, read fresh for every unit (inside the lock), in one app-scoped transaction. */
   private async refresh() {
-    this.snap = await this.scoped(tx => loadSnapshot(tx, this.clock.now(), { app: this.app.id, city: this.city }));
+    this.snap = await this.scoped(tx => loadSnapshot(tx, this.clock.now(), { app: this.app.id, city: this.city, homeCities: this.host.conversationCities?.(this) }));
     await this.identities();
   }
 
@@ -329,15 +331,17 @@ export class NetworkRuntime {
    */
   async identities() {
     const [legacy, platform] = await this.scoped(async tx => [
-      await tx`select ci.member_id, ci.address from network.channel_identities ci
+      await tx`select ci.member_id, ci.address, m.home_city from network.channel_identities ci
         join network.members m on m.app_id = ci.app_id and m.id = ci.member_id
         where ci.app_id = ${this.app.id} and ci.channel in ('imessage', 'sms') and m.account_status not in ('invited', 'removed') order by ci.is_primary desc, ci.member_id`,
       // A number on hold (it may have a new owner) is nobody's address until staff decide.
-      await tx`select m.id as member_id, ph.e164 as address from network.members m join platform.phone_identities ph on ph.person_id = m.person_id
+      await tx`select m.id as member_id, ph.e164 as address, m.home_city from network.members m join platform.phone_identities ph on ph.person_id = m.person_id
         where m.app_id = ${this.app.id} and m.account_status not in ('invited', 'removed') and ph.hold is null order by m.id`,
     ]);
     this.addrToMember.clear(); this.memberToAddr.clear();
+    const homes = this.host.conversationCities?.(this);
     for (const r of [...platform, ...legacy] as any[]) {
+      if (homes && !homes.includes(r.home_city)) continue;
       const a = normalizeAddress(r.address);
       this.addrToMember.set(a, r.member_id);
       if (!this.memberToAddr.has(r.member_id)) this.memberToAddr.set(r.member_id, a);
@@ -664,7 +668,7 @@ export class NetworkRuntime {
       if (facets.length > 50 || facets.some(f => f.length > 300)) return null;
       return {
         firstName, city: member.homeCity, state, stateFrom: participation.active?participation.window!.from:null, stateUntil: participation.active?participation.window!.until:null, facets,
-        activeItems: null, singlePlayer: !canBeMatched(await accounts.lowestAge(e164, binding.person)),
+        activeItems: null, singlePlayer: !presentInNyc(snapshot, member.id, snapshot.now, snapshot.now + 6 * DAY) || !canBeMatched(await accounts.lowestAge(e164, binding.person)),
       };
     });
   }

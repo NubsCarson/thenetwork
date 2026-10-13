@@ -18,6 +18,7 @@
 //    to someone is refused, the consent history and the age floor move with the person, and the old
 //    number's sessions end. The phone_changes row (keyed hashes only) is the audit record.
 import { randomUUID } from "node:crypto";
+import type { City } from "../../core/src/types.ts";
 import { DAY } from "../../core/src/clock.ts";
 import { validAge } from "../../core/src/policy.ts";
 import { canJoinApp, joinAgeCheck, lowestAge } from "./age.ts";
@@ -35,9 +36,19 @@ export type NumberChangeError = "same_number" | "review" | "no_person" | "rate_l
 /** Base-profile fields a person may share from one app to another. Sensitive classes are not in this list and never will be. */
 export const SHAREABLE_FIELDS = ["first_name", "city", "age_band", "interests"] as const;
 
+/** Only an explicitly named city/region, never a ZIP or inferred neighborhood. */
+export function homeCityOf(value: unknown): Extract<City, "nyc" | "sf"> | undefined {
+  if (typeof value !== "string") return undefined;
+  const city = value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  if (["nyc", "new york", "new york city"].includes(city)) return "nyc";
+  if (["sf", "san francisco", "bay area", "the bay area"].includes(city)) return "sf";
+  return undefined;
+}
+
 export interface JoinInput {
   firstName: string;
   age: number;
+  homeCity?: Extract<City, "nyc" | "sf">;
   neighborhood?: string;
   zip?: string;
   interests?: string[];
@@ -66,6 +77,10 @@ export function parseJoin(body: unknown): JoinInput | undefined {
   if (!c || c.sms !== true || (!wording && !version)) return undefined;
   const out: JoinInput = { firstName, age: b.age as number, consent: { sms: true, ...(wording ? { wording } : {}), ...(version ? { version } : {}) } };
   if (b.neighborhood !== undefined) { const v = str(b.neighborhood, 80); if (!v) return undefined; out.neighborhood = v; }
+  const coarseHome = homeCityOf(out.neighborhood);
+  const explicitHome = homeCityOf(b.homeCity);
+  if (b.homeCity !== undefined && (!explicitHome || (coarseHome && coarseHome !== explicitHome))) return undefined;
+  if (explicitHome || coarseHome) out.homeCity = explicitHome ?? coarseHome;
   if (b.zip !== undefined) { if (typeof b.zip !== "string" || !/^\d{5}$/.test(b.zip)) return undefined; out.zip = b.zip; }
   if (b.interests !== undefined) {
     if (!Array.isArray(b.interests) || b.interests.length > 20) return undefined;
@@ -336,7 +351,7 @@ export class Accounts {
       app: app.id, personId: person.id, memberId: existing?.state === "invited" ? existing.memberId : `${app.id}_${randomUUID()}`,
       state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null,
       firstName: input.firstName,
-      profile: Object.fromEntries(Object.entries({ neighborhood: input.neighborhood, zip: input.zip, interests: input.interests, about: input.about }).filter(([, v]) => v !== undefined)),
+      profile: Object.fromEntries(Object.entries({ homeCity: input.homeCity, neighborhood: input.neighborhood, zip: input.zip, interests: input.interests, about: input.about }).filter(([, v]) => v !== undefined)),
       joinedAt: at, leftAt: null,
     };
     await this.store.putMembership(membership);

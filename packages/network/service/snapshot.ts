@@ -47,8 +47,8 @@ export function presenceOf(r: any): Presence {
   return { memberId: r.member_id, city: r.city, type: r.type, areas: r.areas ?? [], ...(r.from_at ? { from: ms(r.from_at) } : {}), ...(r.to_at ? { to: ms(r.to_at) } : {}) };
 }
 
-/** Which network a snapshot is for. Every query names the app; the city keeps members who live there or have presence there. */
-export interface SnapshotScope { app: string; city?: string }
+/** App isolation always applies. Runtime conversation ownership names homeCities; other readers may use physical city/presence scope. */
+export interface SnapshotScope { app: string; city?: string; homeCities?: readonly string[] }
 
 /**
  * The engine's and the Network's input at `now`, for one app (platform plan 2.4: nothing crosses apps).
@@ -78,9 +78,9 @@ export async function loadSnapshot(sql: SQL, now: number, scope: SnapshotScope =
       join network.members f on f.person_id = pb.from_person and f.app_id = ${app}
       join network.members t on t.person_id = pb.to_person and t.app_id = ${app} order by f.id, t.id`,
   ]);
-  // The city: members who live there, or have presence there.
+  // Runtime conversation ownership takes precedence; it never creates or changes physical presence.
   const joined = new Set((members as any[]).map(r => r.id as string));
-  const inCity = (scope.city === undefined ? undefined
+  const inCity = (scope.homeCities ? new Set((members as any[]).filter(r => scope.homeCities!.includes(r.home_city)).map(r => r.id as string)) : scope.city === undefined ? undefined
     : new Set([...(members as any[]).filter(r => r.home_city === scope.city).map(r => r.id as string), ...(presence as any[]).filter(r => r.city === scope.city).map(r => r.member_id as string)]));
   const keep = (id: string) => joined.has(id) && (!inCity || inCity.has(id));
   const partsBy = new Map<string, any[]>();
