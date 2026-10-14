@@ -19,7 +19,7 @@ import { Browser, connectMcp, VERIFIER, newPhone, pgAvailable, rpc, signIn, star
 
 import { slopProfiles, type SlopProfile } from "../../packages/engine/src/packs/slop/profile.ts";
 import { mutualMarkets, makeSlopPack, SLOP_ENGINE_DEFAULTS } from "../../packages/engine/src/packs/slop/index.ts";
-import { cellMiles } from "../../packages/engine/src/packs/slop/zips.ts";
+import { cellMiles, cellOfZip, zipForArea } from "../../packages/engine/src/packs/slop/zips.ts";
 import { World } from "../../packages/engine/src/world.ts";
 import { extractSlopProfile, slopOnboardTags, validateSlopReading } from "../../packages/engine/src/packs/slop/extract.ts";
 import { readBack, applyCorrection } from "../../packages/engine/src/packs/slop/onboard.ts";
@@ -485,12 +485,27 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
           const sfPhone = newPhone(), sfBrowser = new Browser();
           expect((await webJoin(sf, "slop", sfPhone, { age: 32, browser: sfBrowser })).res.status).toBe(200);
           const sfClient = await connectMcp(sf, "slop", sfPhone, { browser: sfBrowser });
-          for (const about of ["Hello, I am ready to finish my profile.", "I'm a man, 32, home in the Bay Area, zip 94103. I date in SF and NYC within 50 miles."]) {
+          for (const about of ["Hello, I am ready to finish my profile.", "I'm a man, 32, home in the Bay Area, zip 94505. Looking for women 28-38. I date in SF and NYC within 50 miles."]) {
             expect(toolData(await rpc(sf, "slop", "/mcp", "tools/call", { name: "submit_profile", arguments: { about } }, sfClient.token!.access_token)).submitted).toBe(true);
           }
           const sfSaved = (await sfDb`select state from network.network_state where id='slop:sf'`)[0].state.members[0];
-          expect(sfSaved.onboarding.location.value.zip).toBe("94103");
+          expect(sfSaved.onboarding.location.value.zip).toBe("94505");
+          expect(sfSaved.onboarding.location.value.known).toBe(true);
+          expect(zipForArea("Bay Area")).toBeUndefined();
           expect(sfSaved.onboarding.distance.value).toEqual({mode:"multi",markets:["nyc","sf"],miles:50});
+          expect(sfSaved.onboarding.gender.value).toBe("man");
+          expect(sfSaved.onboarding.seeks.value).toEqual(["woman"]);
+          expect(sfSaved.onboarding.ageRange.value).toEqual([28,38]);
+          const locationTags = sfSaved.appTags.filter((t:any) => /^(slop:(zip|max_miles|scope):|romance:)/.test(t.tag));
+          expect(locationTags.some((t:any) => t.tag === "slop:zip:94505")).toBe(true);
+          expect(locationTags.some((t:any) => t.tag === "slop:max_miles:50")).toBe(true);
+          expect(locationTags.every((t:any) => t.scope === "agent_private")).toBe(true);
+          const cell = cellOfZip(sfSaved.onboarding.location.value.zip);
+          expect(cell).toBeDefined();
+          expect(cell!.lat).toBeCloseTo(37.875, 6);
+          expect(cell!.lon).toBeCloseTo(-121.595, 6);
+          expect(cell!.lat).not.toBe(37.8713);
+          expect(cell!.lon).not.toBe(-121.5970);
           expect((await sfDb`select home_city from network.members where app_id='slop'`)[0].home_city).toBe("sf");
           expect((await sf.svc.runtimeFor("slop")!.unitOfWork(n => n.packInput(sf.clock.now()))).members).toEqual([]);
         } finally { await sfDb.close(); await sf.close(); }

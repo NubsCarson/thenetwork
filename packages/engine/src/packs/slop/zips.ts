@@ -246,6 +246,7 @@ export const ZIPS: readonly ZipCentroid[] = [
   { zip: "94612", market: "sf", area: "Downtown Oakland", lat: 37.8102, lon: -122.2697 },
   { zip: "94618", market: "sf", area: "Rockridge, Oakland", lat: 37.8448, lon: -122.2386 },
   { zip: "94501", market: "sf", area: "Alameda", lat: 37.7738, lon: -122.2781 },
+  { zip: "94505", market: "sf", area: "94505", lat: 37.8713, lon: -121.5970 },
   { zip: "94702", market: "sf", area: "West Berkeley", lat: 37.8658, lon: -122.2863 },
   { zip: "94703", market: "sf", area: "South Berkeley", lat: 37.8639, lon: -122.2756 },
   { zip: "94704", market: "sf", area: "Berkeley", lat: 37.8664, lon: -122.2573 },
