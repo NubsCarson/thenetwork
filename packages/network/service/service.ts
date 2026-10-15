@@ -1783,6 +1783,21 @@ export class NetworkService implements RuntimeHost {
       };
       if (path === UPDATES_PATH) {
         if (!await authorized()) throw new Error("Membership revoked before updates");
+        // Seen state, surface activity and the action receipt commit together. A
+        // blocked notification write may outlive the route window; complete()
+        // rechecks it and rolls the entire transaction back in that case.
+        if (this.notify!.store instanceof PgNotifyStore) {
+          const result = await this.sql.begin(async tx => {
+            await lock(tx);
+            const notifications = new Notifier(new PgNotifyStore(tx), {get: personId => this.notifyRecipient(personId)}, this.notify!.cfg);
+            const items = await notifications.readUpdates(who.person.id, "web", this.clock.now(), undefined, {app});
+            const result = {items:items.map(item => ({summary:item.summary}))};
+            await complete(tx, result);
+            return result;
+          });
+          return json(result);
+        }
+        if (this.routePolicy) return json({error:"canonical_updates_unavailable",retryable:false},503);
         const result = {items:(await this.updatesFor(who.person.id,app,"web")).map(item=>({summary:item.summary}))};
         await this.sql.begin(async tx=>{await lock(tx);await complete(tx,result);});
         return json(result);
