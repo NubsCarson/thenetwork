@@ -65,7 +65,14 @@ function mountOtpAuth(root: HTMLElement, onSignedIn: () => Promise<void> | void)
   const codeForm = $(root, 'form[data-form="code"]') as HTMLFormElement | null;
   if (!phoneForm || !codeForm) return;
   let phone = "";
-  const human = mountTurnstile(phoneForm);
+  const checkPending = root.getAttribute("data-msg-turnstile-wait") ?? "Wait for the check above to finish, then try again.";
+  const checkFailed = root.getAttribute("data-msg-turnstile-failed") ?? "The security check failed. Refresh the page and try again.";
+  const human = mountTurnstile(phoneForm, state => {
+    const error = phoneForm.querySelector<HTMLElement>("[data-error]")?.textContent;
+    const checkError = error === checkPending || error === checkFailed;
+    if (state === "failed" && (!error || checkError)) setError(phoneForm, checkFailed);
+    else if (state === "ready" && checkError) setError(phoneForm, "");
+  });
 
   phoneForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -80,7 +87,7 @@ function mountOtpAuth(root: HTMLElement, onSignedIn: () => Promise<void> | void)
     input.removeAttribute("aria-invalid");
     const token = human?.token();
     if (human && !token) {
-      setError(phoneForm, root.getAttribute("data-msg-turnstile-wait") ?? "Wait for the check above to finish, then try again.");
+      setError(phoneForm, human.state() === "failed" ? checkFailed : checkPending);
       return;
     }
     setError(phoneForm, "");
