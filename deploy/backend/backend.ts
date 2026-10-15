@@ -25,6 +25,7 @@ import { requirePlatformEnv, type Env, type PlatformEnv } from "../../packages/p
 import { PROXY_HEADERS, verifyProxyHeaders } from "../../packages/platform/src/proxy.ts";
 import { timingSafeEqual } from "node:crypto";
 import { opsConfigFromEnv, type OpsConfig } from "./ops.ts";
+import { networkRoutePolicy } from "../../packages/network/service/route-authority.ts";
 import { RELAY_MAX_BODY_BYTES, RELAY_PATH } from "../../packages/network/service/relay-endpoint.ts";
 
 export { PROXY_HEADERS };
@@ -76,6 +77,7 @@ export const MAX_PUBLIC_BODY_BYTES = 9 * 1024 * 1024;
 /** Reads and checks the environment. Fails closed: a deployed environment without its secrets does not start. */
 export function loadConfig(e: Env = process.env, argv: string[] = []): BackendConfig {
   const env = requirePlatformEnv(e);
+  const isolatedRoute = networkRoutePolicy(e);
   const deployed = env === "staging" || env === "production";
   const databaseUrl = e.NETWORK_DATABASE_URL || e.DATABASE_URL;
   const missing: string[] = [];
@@ -135,7 +137,7 @@ export function loadConfig(e: Env = process.env, argv: string[] = []): BackendCo
   const cloudAsked = e.NETWORK_CHANNEL === "eliza_cloud" && !argv.includes("--dry-run");
   // The Blooio adapter is built only when the global flags are on; each app's own flag is checked again per send.
   // The same global check as liveSendAllowed(env, "ntwrk") in packages/network/service/channel.ts.
-  const channel = (blooioAsked || cloudAsked) && e.BLOOIO_ALLOW_SEND === "1" && e.NTWRK_LIVE_APPROVED === "1" ? cloudAsked ? "eliza_cloud" : "blooio" : "dry-run";
+  const channel = !isolatedRoute && (blooioAsked || cloudAsked) && e.BLOOIO_ALLOW_SEND === "1" && e.NTWRK_LIVE_APPROVED === "1" ? cloudAsked ? "eliza_cloud" : "blooio" : "dry-run";
   if (blooioAsked && channel === "dry-run") warnings.push("NETWORK_CHANNEL=blooio without BLOOIO_ALLOW_SEND=1 and NTWRK_LIVE_APPROVED=1: sends stay dry-run");
   if (cloudAsked && channel === "dry-run") warnings.push("NETWORK_CHANNEL=eliza_cloud without BLOOIO_ALLOW_SEND=1 and NTWRK_LIVE_APPROVED=1: sends stay dry-run");
   if (channel === "eliza_cloud" && (!e.NETWORK_CLOUD_DELIVERY_ORIGIN || !e.SERVICE_TURN_SECRET || e.SERVICE_TURN_SECRET.length<32 || !(e.BLOOIO_FROM || e.BLOOIO_FROM_NUMBER))) throw new Error("Cloud sends need NETWORK_CLOUD_DELIVERY_ORIGIN, SERVICE_TURN_SECRET and BLOOIO_FROM");

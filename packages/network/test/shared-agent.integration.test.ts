@@ -9,6 +9,7 @@ import {svcSign} from "../../core/src/svc/svc-auth.ts";
 import {TURN_PATH, TURN_RECEIPT_PATH, type TurnRequest, type TurnReceiptRequest} from "../../core/src/svc/contract.ts";
 import {DryRunAdapter} from "../service/channel.ts";
 import {NetworkService} from "../service/service.ts";
+import {networkRoutePolicy, routeEnvelopeAllowed} from "../service/route-authority.ts";
 
 const db = `network_signed_turn_${randomUUID().replaceAll("-", "")}`;
 const admin = new SQL({url:`postgres://${process.env.USER ?? "postgres"}@127.0.0.1:54339/postgres`, max:1});
@@ -17,9 +18,14 @@ const secret = "synthetic-shared-agent-test-secret-20261009";
 const clock = new SimClock(Date.UTC(2026, 9, 9, 16));
 let sql: SQL, service: NetworkService, server: ReturnType<typeof Bun.serve>;
 let escaped = 0, code = "";
-const start = async () => {
+const start = async (routePolicy?: Record<string, unknown>) => {
+  // Only this test's newly created database changes realm markers. The service's
+  // normal staging/database mismatch guard stays intact.
+  const [realm] = await sql`select current_database() as database,value from platform.settings where key='environment'`;
+  if (realm?.database !== db || !["dev","staging"].includes(realm.value)) throw new Error("Owned test realm required");
+  await sql`update platform.settings set value=${routePolicy ? "staging" : "dev"} where key='environment'`;
   service = new NetworkService({url, clock, photoStorage:null, instance:"signed-turn-integration",
-    env:{PLATFORM_ENV:"dev", CLEF_RATINGS:"off", SERVICE_TURN_SECRET:secret}, networks:[{id:"ntwrk:nyc",matchingEnabled:false},{id:"slop:nyc",matchingEnabled:false},{id:"friends:nyc",matchingEnabled:false}],
+    env:{PLATFORM_ENV:routePolicy ? "staging" : "dev", PLATFORM_HASH_KEY:"synthetic-route-test-hash-key", CLEF_RATINGS:"off", SERVICE_TURN_SECRET:secret, ...(routePolicy ? {NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(routePolicy)} : {})}, networks:[{id:"ntwrk:nyc",matchingEnabled:false},{id:"slop:nyc",matchingEnabled:false},{id:"friends:nyc",matchingEnabled:false}],
     network:{seed:1}, publicApi:{minStartMs:0,minVerifyMs:0,otp:{name:"fixture",send:async () => {code="314159";return {code};}}},
     adapter:() => {const a=new DryRunAdapter(()=>{});a.direct=async()=>{escaped++;return "dry_run";};a.deliver=async rows=>{escaped+=rows.length;return rows.map(r=>({id:r.id,status:"dry_run"}));};return a;},log:()=>{},
   });
@@ -251,6 +257,136 @@ test("the Cloud turn secret is never also a staff bearer token", () => {
   expect(() => make({tokens:`reviewer@slop:other-staff-token-0001,admin@*:console-token-00000001`, consoleToken:secret})).toThrow(/SERVICE_TURN_SECRET must differ/);
   expect(() => make({tokens:"admin@*:console-token-00000001", consoleToken:"console-token-00000001"})).not.toThrow();
 });
+
+
+test("isolated route authority fences cross-realm writes and only drains exact durable turns", async () => {
+  server.stop(true); await service.close();
+  const authority = {version:1 as const,routeId:"owned-route",generation:"generation-1",audience:"network-owned-qa",realmId:"owned-qa"};
+  const begin = clock.now(), policy = {authority,admitUntil:begin+10*MINUTE,drainUntil:begin+20*MINUTE};
+  await start(policy);
+  const input = {...turn("isolated-help", "+12125550991", "HELP"), networkAuthority:authority};
+  const [before] = await sql`select count(*)::int as count from platform.inbound`;
+  for (const networkAuthority of [undefined,{...authority,realmId:"production"},{...authority,generation:"old"},{...authority,audience:"wrong"},{...authority,routeId:"other"},{...authority,extra:true}]) {
+    expect((await post({...input,networkAuthority})).status).toBe(403);
+  }
+  const [untouched] = await sql`select count(*)::int as count from platform.inbound`;
+  expect(untouched.count).toBe(before.count);
+  const accepted = await post(input); expect(accepted.status).toBe(200); const response = await accepted.json() as any;
+  const [stored] = await sql`select network_authority,request_hash from platform.inbound where id='msg:blooio:isolated-help'`;
+  expect(stored.network_authority).toEqual(authority);
+  expect(stored.request_hash).toBe(new Bun.CryptoHasher("sha256").update(JSON.stringify(input)).digest("hex"));
+  // Use a distinct fixture name: the separate sharedContext duplicate-first-name
+  // defect is tracked explicitly and must not obscure route-authority assertions.
+  const phone = "+12125550993";
+  let step = 0;
+  const qa = (text:string) => ({...turn(`isolated-open-${++step}`,phone,text,"friends"),networkAuthority:authority});
+  for (const [index,text] of ["friends.help","Inez, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()) {
+    // Match the proven normal onboarding sequence: later answers arrive after the prior ask.
+    if (index >= 2) clock.advance(MINUTE);
+    const response=await post(qa(text)), body=await response.json() as any;
+    expect({step:index+1,status:response.status,body}).toMatchObject({status:200,body:{outcome:"handled",reason:expect.any(String)}});
+  }
+  const open = qa("Tell me about the weather"), opened = await (await post(open)).json() as any;
+  expect({stage:"after timed onboarding",body:opened}).toMatchObject({body:{outcome:"open"}});
+  const action = {channel:open.channel,messageId:open.messageId,app:opened.app,memberId:opened.memberId,networkAuthority:authority};
+  const updates = async (body:Record<string,unknown>) => {
+    const raw = JSON.stringify(body);
+    return fetch(new URL("/internal/updates",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/updates",id:`${open.messageId}:updates`,body:raw,nowS:Math.floor(clock.now()/1000)})},body:raw});
+  };
+  expect((await updates(action)).status).toBe(200);
+  expect((await updates({...action,memberId:"different-member"})).status).toBe(403);
+  expect((await updates({...action,networkAuthority:{...authority,generation:"old"}})).status).toBe(403);
+  clock.advance(policy.admitUntil-clock.now());
+  expect((await updates(action)).status).toBe(200);
+  expect(await (await post(input)).json()).toEqual(response);
+  expect((await post({...input,text:"STOP"})).status).toBe(409);
+  expect((await post({...input,messageId:"isolated-new-after-close"})).status).toBe(403);
+  const ack = {channel:input.channel,messageId:input.messageId,replyIds:response.replyIds,outcome:"accepted" as const,providerMessageIds:["synthetic-isolated-receipt"],historyRecorded:false,networkAuthority:authority};
+  expect((await receipt(ack)).status).toBe(200);
+  expect((await receipt({...ack,networkAuthority:{...authority,realmId:"wrong"}})).status).toBe(403);
+  const raw = JSON.stringify({channel:input.channel,messageId:input.messageId,app:"friends",memberId:"none",itemId:null,text:"tell them hi",networkAuthority:authority});
+  const relay = await fetch(new URL("/internal/relay",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/relay",id:`${input.messageId}:relay`,body:raw,nowS:Math.floor(clock.now()/1000)})},body:raw});
+  expect(relay.status).toBe(403);
+  clock.advance(policy.drainUntil-clock.now());
+  expect((await post(input)).status).toBe(403);
+  expect((await receipt(ack)).status).toBe(403);
+  expect((await updates(action)).status).toBe(403);
+  server.stop(true); await service.close(); await start();
+  expect((await post(input)).status).toBe(403);
+  expect((await post(turn("legacy-after-isolation", "+12125550992", "HELP"))).status).toBe(200);
+}, 60_000);
+
+
+test("route policy boot validation rejects malformed or non-staging authority", () => {
+  const authority = {version:1 as const,routeId:"owned-route",generation:"generation-1",audience:"network-owned-qa",realmId:"owned-qa"};
+  const value = {authority,admitUntil:1000,drainUntil:2000};
+  const env = {PLATFORM_ENV:"staging",NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(value)};
+  const valid = networkRoutePolicy(env);
+  expect(valid?.authority).toEqual(authority);
+  expect(networkRoutePolicy({})).toBeUndefined();
+  expect(routeEnvelopeAllowed(undefined, authority, 0)).toBe(false);
+  expect(routeEnvelopeAllowed(valid, authority, 1999)).toBe(true);
+  expect(routeEnvelopeAllowed(valid, authority, 2000)).toBe(false);
+  for (const bad of [null, [], {...value,extra:true}, {...value,admitUntil:0}, {...value,drainUntil:999}, {...value,drainUntil:Infinity}, {...value,authority:{...authority,url:"https://elsewhere.invalid"}}, {...value,authority:{...authority,version:2}}]) {
+    expect(() => networkRoutePolicy({...env,NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(bad)})).toThrow();
+  }
+  expect(() => networkRoutePolicy({...env,PLATFORM_ENV:"production"})).toThrow();
+  expect(() => networkRoutePolicy({...env,PLATFORM_ENV:"dev"})).toThrow();
+});
+
+// A real row lock holds both signed requests across the server's drain deadline.
+test("isolated actions and receipts recheck the drain window after database lock waits", async () => {
+  server.stop(true); await service.close();
+  const authority = {version:1 as const,routeId:"locked-route",generation:"g1",audience:"locked-qa",realmId:"locked-qa"};
+  const begin = clock.now(), policy={authority,admitUntil:begin+10*MINUTE,drainUntil:begin+20*MINUTE}; await start(policy);
+  const help = {...turn("locked-help", "+12125550994", "HELP"),networkAuthority:authority};
+  const handled = await (await post(help)).json() as any;
+  let step=0;
+  const qa = (text:string) => ({...turn(`locked-open-${++step}`,"+12125550995",text,"friends"),networkAuthority:authority});
+  for (const [index,text] of ["friends.help","Luca, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()) {
+    // Match the proven normal onboarding sequence: later answers arrive after the prior ask.
+    if (index >= 2) clock.advance(MINUTE);
+    const response=await post(qa(text)), body=await response.json() as any;
+    expect({step:index+1,status:response.status,body}).toMatchObject({status:200,body:{outcome:"handled",reason:expect.any(String)}});
+  }
+  const open=qa("Tell me about the weather"), opened=await (await post(open)).json() as any;
+  expect({stage:"after timed onboarding",body:opened}).toMatchObject({body:{outcome:"open"}});
+  const[memberBefore]=await sql`select participation_state,participation_window from network.members where app_id='friends'and id=${opened.memberId}`;
+  const locker=new SQL({url,max:1}); let release!:()=>void, locked!:()=>void;
+  const released=new Promise<void>(resolve=>{release=resolve;}), acquired=new Promise<void>(resolve=>{locked=resolve;});
+  const transaction=locker.begin(async tx=>{
+    await tx`select id from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`}) order by id for update`;
+    locked(); await released;
+  });
+  await acquired;
+  try {
+    const ack={channel:help.channel,messageId:help.messageId,replyIds:handled.replyIds,outcome:"accepted" as const,providerMessageIds:["synthetic-locked-receipt"],historyRecorded:false,networkAuthority:authority};
+    const action={channel:open.channel,messageId:open.messageId,app:opened.app,memberId:opened.memberId,idempotencyKey:"locked-state-action",state:"busy",from:null,until:null,note:null,networkAuthority:authority};
+    const raw=JSON.stringify(action);
+    const pendingReceipt=receipt(ack);
+    const pendingAction=fetch(new URL("/internal/set-state",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/set-state",id:action.idempotencyKey,body:raw,nowS:Math.floor(clock.now()/1000)})},body:raw});
+    const deadline=Date.now()+5000; let waiters=0;
+    while(Date.now()<deadline){
+      const[row]=await admin`select count(*)::int as count from pg_stat_activity where datname=${db} and wait_event_type='Lock' and lower(query) like '%platform.inbound%'`;
+      waiters=row.count;if(waiters>=2)break;await Bun.sleep(10);
+    }
+    expect(waiters).toBeGreaterThanOrEqual(2);
+    clock.advance(policy.drainUntil-clock.now()); release(); await transaction;
+    const [receiptResponse, actionResponse] = await Promise.all([pendingReceipt, pendingAction]);
+    expect(receiptResponse.status).toBe(403);
+    expect(actionResponse.status).toBe(403);
+    const rows=await sql`select id,receipt_hash,action_receipts from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`})`;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.receipt_hash).toBeNull();
+      expect(Object.keys(row.action_receipts)).toHaveLength(0);
+    }
+    const[memberAfter]=await sql`select participation_state,participation_window from network.members where app_id='friends'and id=${opened.memberId}`;
+    expect(memberAfter).toEqual(memberBefore);
+    // Expired exact replays remain denied; an accepted receipt is not an extension of the window.
+    expect((await receipt(ack)).status).toBe(403);
+  } finally {release();await transaction;await locker.close();server.stop(true);await service.close();await start();}
+},60_000);
 
 
 test("members sharing a first name receive their own context without another person's private details", async () => {

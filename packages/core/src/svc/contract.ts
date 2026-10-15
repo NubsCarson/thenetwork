@@ -25,7 +25,55 @@ export const SIGNALS_PATH = "/internal/signals";
 export const UPDATES_PATH = "/internal/updates";
 export const RELAY_PATH = "/internal/relay";
 
+/** Opaque server-selected route identity carried INSIDE the existing signed JSON body.
+ * No URL, credential or client-supplied clock grants authority. Receivers separately
+ * resolve this tuple against their expected audience, realm and retained route policy.
+ */
+export interface NetworkRouteAuthorityV1 {
+  readonly version: 1;
+  readonly routeId: string;
+  readonly generation: string;
+  readonly audience: string;
+  readonly realmId: string;
+}
+
+/** Structural validation only; this does not verify a signature or grant admission. */
+export function parseNetworkRouteAuthorityV1(
+  value: unknown,
+): NetworkRouteAuthorityV1 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const record = value as Record<string, unknown>;
+  const keys = ["version", "routeId", "generation", "audience", "realmId"];
+  if (
+    Object.keys(record).length !== keys.length ||
+    Object.keys(record).some((key) => !keys.includes(key)) ||
+    record.version !== 1
+  )
+    return undefined;
+  const boundedId = (input: unknown, limit: number): input is string =>
+    typeof input === "string" &&
+    input.length <= limit &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(input);
+  if (
+    !boundedId(record.routeId, 64) ||
+    !boundedId(record.generation, 64) ||
+    !boundedId(record.audience, 128) ||
+    !boundedId(record.realmId, 64)
+  )
+    return undefined;
+  return Object.freeze({
+    version: 1,
+    routeId: record.routeId,
+    generation: record.generation,
+    audience: record.audience,
+    realmId: record.realmId,
+  });
+}
+
 export interface TurnRequest {
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   /** The provider message id (Blooio msg_… / Twilio SM…). Idempotency key: a replay returns the stored result and runs nothing. */
   messageId: string;
   channel: "blooio" | "twilio";
@@ -91,6 +139,8 @@ export type TurnResponse =
 
 /** Gateway acknowledgement of the exact collected outputs for one inbound turn. */
 export interface TurnReceiptRequest {
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   channel: TurnRequest["channel"];
   messageId: string;
   replyIds: string[];
@@ -106,6 +156,10 @@ export interface TurnReceiptResponse {
 }
 
 export interface DeliverRequest {
+  /** Mandatory for isolated reply delivery; must match a durably admitted turn. */
+  networkParentTurn?: Pick<TurnRequest, "channel" | "messageId">;
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   /** Idempotency key (also x-ntwrk-svc-id). The gateway sends each key at most once. */
   id: string;
   to: string;
@@ -142,6 +196,8 @@ export type DeliverResponse =
  * memberId and app are the service's, from the open TurnResponse; never from model output.
  */
 export interface SetStateRequest {
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   messageId: string;
   channel: TurnRequest["channel"];
   idempotencyKey: string;
@@ -165,6 +221,8 @@ export interface SetStateResponse {
 }
 
 export interface SignalsRequest {
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   channel: TurnRequest["channel"];
   messageId: string;
   app: NetworkAppId;
@@ -179,6 +237,8 @@ export interface SignalsResponse {
 }
 
 export interface UpdatesRequest {
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   channel: TurnRequest["channel"];
   app: NetworkAppId;
   memberId: string;
@@ -196,6 +256,8 @@ export interface UpdatesResponse {
  * `rendered` ever reaches the other member, through /api/internal/network/deliver (kind "relay").
  */
 export interface RelaySendRequest {
+  /** Optional for legacy production; mandatory and server-verified in isolated realms. */
+  networkAuthority?: NetworkRouteAuthorityV1;
   channel: TurnRequest["channel"];
   messageId: string;
   app: NetworkAppId;

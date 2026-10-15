@@ -34,6 +34,7 @@ import { ageAnswer, agesStated } from "../src/classify.ts";
 import { NetworkRuntime, type RuntimeHost } from "./runtime.ts";
 import { effectiveParticipation } from "./snapshot.ts";
 import { Inbox, type CollectedReply } from "./inbox.ts";
+import { networkRoutePolicy, routeEnvelopeAllowed, sameNetworkAuthority, type NetworkRoutePolicy } from "./route-authority.ts";
 import { TURN_PATH, TURN_RECEIPT_PATH, SET_STATE_PATH, SIGNALS_PATH, UPDATES_PATH, type SetStateRequest, type TurnRequest, type TurnResponse } from "../../core/src/svc/contract.ts";
 import { SVC_MIN_SECRET, svcVerify } from "../../core/src/svc/svc-auth.ts";
 import { readCapped } from "../../platform/src/body.ts";
@@ -88,7 +89,7 @@ export const RETIRED_ENV = ["STOP_HELP_OWNER", "STOP_HELP_GATEWAY_SECRET"] as co
  */
 export function turnSecretProblem(env: Record<string, string | undefined> = process.env): string | undefined {
   const secret = env.SERVICE_TURN_SECRET;
-  const on = !!secret || env.NETWORK_CHANNEL === "eliza_cloud";
+  const on = !!secret || env.NETWORK_CHANNEL === "eliza_cloud" || env.NETWORK_ROUTE_AUTHORITY_POLICY !== undefined;
   if (!on) return undefined;
   if (!secret || secret.length < SVC_MIN_SECRET) return `SERVICE_TURN_SECRET must have at least ${SVC_MIN_SECRET} characters when the turn path is on`;
   return undefined;
@@ -244,6 +245,8 @@ export function parseJoinText(text: string, appWords: readonly string[], nameOk:
   return { ...(age !== undefined ? { age } : {}), ...(name ? { name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() } : {}), ...(cities[0] ? { homeCity: cities[0] } : {}), ...(invalidHome ? { invalidHome: true } : {}) };
 }
 
+class RouteAuthorityExpiredError extends Error {}
+
 export class NetworkService implements RuntimeHost {
   readonly sql: SQL;
   readonly clock: Clock;
@@ -289,6 +292,8 @@ export class NetworkService implements RuntimeHost {
 
   private readonly relayClassifier?: RelayClassifierHook;
 
+  private readonly routePolicy: NetworkRoutePolicy | undefined;
+
   constructor(o: ServiceOptions) {
     this.relayClassifier = o.relayClassifier;
     if (o.network?.review && o.network.review !== "human") throw new Error(`review mode "${o.network.review}" is refused: production review is "human" only (runbook-real 7.4)`);
@@ -296,6 +301,7 @@ export class NetworkService implements RuntimeHost {
     this.instance = o.instance ?? `${process.pid}`;
     this.log = o.log ?? console.log;
     this.env = o.env ?? process.env;
+    this.routePolicy = networkRoutePolicy(this.env);
     this.secret = o.webhookSecret;
     this.consoleToken = o.consoleToken || undefined;
     this.secrets = o.webhookSecrets ?? {};
@@ -1708,10 +1714,16 @@ export class NetworkService implements RuntimeHost {
   }
 
   /** Agent actions inherit one completed open turn; receipts stay on that original inbound owner. */
+  private assertLockedRoute(value: unknown): void {
+    if (this.routePolicy && (!routeEnvelopeAllowed(this.routePolicy, value, this.clock.now())
+      || !sameNetworkAuthority(value, this.routePolicy.authority))) throw new RouteAuthorityExpiredError();
+  }
+
   private async sharedAction(path: string, b: Row, signedId: string, raw: string): Promise<Response> {
     const stateAction = path === SET_STATE_PATH;
     const keys = stateAction ? ["channel","messageId","app","memberId","idempotencyKey","state","from","until","note"]
       : path === SIGNALS_PATH ? ["channel","messageId","app","memberId","signals"] : ["channel","messageId","app","memberId"];
+    if (b.networkAuthority !== undefined) keys.push("networkAuthority");
     const key = stateAction ? b.idempotencyKey : `${b.messageId}:${path === SIGNALS_PATH ? "signals" : "updates"}`;
     if (!isAppId(b.app) || typeof b.memberId !== "string" || !b.memberId.trim() || b.memberId.length > 256
       || typeof key !== "string" || !key.trim() || key.length > 512 || /[\r\n\u0000]/.test(key) || signedId !== key
@@ -1743,9 +1755,10 @@ export class NetworkService implements RuntimeHost {
       await tx`select set_config('app.app_id',${app},true)`;
       await tx`select member_id from platform.memberships where person_id=${who.person.id} and app_id=${app} for update`;
       await tx`select id from network.members where app_id=${app} and id=${memberId} for update`;
-      const [turn] = await tx`select status,response,sender_hash,action_receipts from platform.inbound where id=${turnId} for update`;
+      const [turn] = await tx`select status,response,sender_hash,action_receipts,network_authority from platform.inbound where id=${turnId} for update`;
       if (!turn || turn.status !== "done" || turn.sender_hash !== original.sender_hash || turn.response?.outcome !== "open"
         || turn.response.app !== app || turn.response.memberId !== memberId || !await authorized()) throw new Error("Original turn authority changed");
+      this.assertLockedRoute(turn.network_authority);
       return turn;
     };
     try {
@@ -1763,6 +1776,7 @@ export class NetworkService implements RuntimeHost {
       });
       if (claim.response) return claim.response;
       const complete = async (tx: SQL, result: Row) => {
+        this.assertLockedRoute(b.networkAuthority);
         const saved = await tx`update platform.inbound set action_receipts=jsonb_set(action_receipts,array[${id}],${{requestHash:digest,state:"completed",response:result}}::jsonb)
           where id=${turnId} and status='done' and action_receipts->${id}->>'requestHash'=${digest} and action_receipts->${id}->>'state'='processing' returning id`;
         if (!saved.length) throw new Error("Action ownership changed before completion");
@@ -1808,7 +1822,8 @@ export class NetworkService implements RuntimeHost {
         return result;
       });
       return json(result);
-    } catch {
+    } catch (error) {
+      if (error instanceof RouteAuthorityExpiredError) return json({error:"route_authority_invalid",retryable:false},403);
       await this.sql`update platform.inbound set action_receipts=jsonb_set(action_receipts,array[${id}],${{requestHash:digest,state:"unresolved"}}::jsonb)
         where id=${turnId} and status='done' and action_receipts->${id}->>'requestHash'=${digest} and action_receipts->${id}->>'state'='processing'`;
       return json({error:"action_unresolved",retryable:false},409);
@@ -1831,17 +1846,29 @@ export class NetworkService implements RuntimeHost {
     try { b = JSON.parse(raw); } catch { return json({error: "invalid_request"}, 400); }
     if (!b || typeof b !== "object" || Array.isArray(b) || (b.channel !== "blooio" && b.channel !== "twilio")
       || typeof b.messageId !== "string" || !b.messageId.trim() || b.messageId.length > 512 || /[\r\n\u0000]/.test(b.messageId)) return json({error: "invalid_request"}, 400);
+    if (!routeEnvelopeAllowed(this.routePolicy, b.networkAuthority, this.clock.now())) return json({error:"route_authority_invalid"},403);
+    if (this.routePolicy) {
+      const [original] = await this.sql`select network_authority from platform.inbound where id=${`msg:${b.channel}:${b.messageId}`}`;
+      if (original) {
+        if (!sameNetworkAuthority(original.network_authority, this.routePolicy.authority)) return json({error:"route_authority_invalid"},403);
+      } else if (url.pathname !== TURN_PATH || this.clock.now() >= this.routePolicy.admitUntil) {
+        return json({error:"route_admission_closed"},403);
+      }
+    }
     if ([SET_STATE_PATH,SIGNALS_PATH,UPDATES_PATH].includes(url.pathname)) return this.sharedAction(url.pathname,b,auth.id,raw);
     const digest = createHash("sha256").update(raw).digest("hex");
     const id = `msg:${b.channel}:${b.messageId}`;
     if (url.pathname === TURN_RECEIPT_PATH) {
-      if (auth.id !== `${b.messageId}:receipt` || Object.keys(b).length !== 6
+      if (auth.id !== `${b.messageId}:receipt` || Object.keys(b).length !== (b.networkAuthority === undefined ? 6 : 7)
+        || Object.keys(b).some(k => !["channel","messageId","replyIds","providerMessageIds","historyRecorded","outcome","networkAuthority"].includes(k))
         || !Array.isArray(b.replyIds) || !b.replyIds.every(x => typeof x === "string")
         || !Array.isArray(b.providerMessageIds) || !b.providerMessageIds.every(x => typeof x === "string" && x.trim())
         || typeof b.historyRecorded !== "boolean" || !["accepted", "unknown", "rejected"].includes(b.outcome as string)) return json({error: "invalid_request"}, 400);
       const result = await this.sql.begin(async tx => {
-        const [claim] = await tx`select status,response,receipt_hash,receipt,replies from platform.inbound where id=${id} for update`;
+        const [claim] = await tx`select status,response,receipt_hash,receipt,replies,network_authority from platform.inbound where id=${id} for update`;
         if (!claim || claim.status !== "done" || claim.response?.outcome !== "handled") return json({error: "turn_unavailable", retryable: false}, 409);
+        if (this.routePolicy && !routeEnvelopeAllowed(this.routePolicy, claim.network_authority, this.clock.now()))
+          return json({error:"route_authority_invalid",retryable:false},403);
         if (claim.receipt_hash === digest) return json({ok: true, replayed: true});
         if (claim.receipt_hash && !(claim.receipt?.outcome === "unknown" && ["accepted", "rejected"].includes(b.outcome as string))) return json({error: "receipt_conflict", retryable: false}, 409);
         const collected = claim.replies as CollectedReply[];
@@ -1877,7 +1904,7 @@ export class NetworkService implements RuntimeHost {
       }
       return result;
     }
-    if (auth.id !== b.messageId || Object.keys(b).some(k => !["messageId","channel","from","to","text","transport","receivedAt","app"].includes(k))
+    if (auth.id !== b.messageId || Object.keys(b).some(k => !["messageId","channel","from","to","text","transport","receivedAt","app","networkAuthority"].includes(k))
       || typeof b.from !== "string" || normalizePhone(b.from) !== b.from
       || (b.to !== null && (typeof b.to !== "string" || normalizePhone(b.to) !== b.to))
       || typeof b.text !== "string" || !b.text.trim() || !["imessage","sms","rcs","unknown"].includes(b.transport as string)
@@ -1923,7 +1950,7 @@ export class NetworkService implements RuntimeHost {
       return {outcome: "handled", replies: collected.map(r => r.body), replyIds: collected.map(r => r.id), delivery: "collected",
         replyKind: collected.length && collected.every(r => r.kind === "compliance") ? "compliance" : "reply", accountEligible,
         app: turn.app ?? null, memberId: turn.memberId ?? null, reason: onboarding ? "onboarding_asked" : outcome === "open" ? "context_unavailable" : outcome, ...(turn.consent ? {consent: turn.consent} : {})} satisfies TurnResponse;
-    });
+    }, this.routePolicy?.admitUntil);
     if (result.status === 200 && result.body && typeof result.body === "object" && "outcome" in result.body && result.body.outcome === "open") {
       const cached = result.body as Extract<TurnResponse, {outcome: "open"}>;
       const rt = await this.runtimeOfMember(cached.app, cached.memberId);
@@ -1947,7 +1974,7 @@ export class NetworkService implements RuntimeHost {
   fetch = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
     if ([TURN_PATH, TURN_RECEIPT_PATH, SET_STATE_PATH, SIGNALS_PATH, UPDATES_PATH].includes(url.pathname)) return this.sharedTurn(req);
-    if (url.pathname === RELAY_PATH) return relayEndpoint({ sql: this.sql, clock: this.clock, secret: this.env.SERVICE_TURN_SECRET, accounts: this.accounts, runtimeFor: app => this.runtimeFor(app), runtimeOfMember: (app, memberId) => this.runtimeOfMember(app, memberId), ...(this.relayHookFor ? { hookFor: this.relayHookFor } : {}) }, req);
+    if (url.pathname === RELAY_PATH) return relayEndpoint({ sql: this.sql, clock: this.clock, secret: this.env.SERVICE_TURN_SECRET, routePolicy: this.routePolicy, accounts: this.accounts, runtimeFor: app => this.runtimeFor(app), runtimeOfMember: (app, memberId) => this.runtimeOfMember(app, memberId), ...(this.relayHookFor ? { hookFor: this.relayHookFor } : {}) }, req);
     let path = url.pathname.replace(/\/+$/, "") || "/";
     try {
       if (path === WEBHOOK_PATH || path.startsWith(`${WEBHOOK_PATH}/`)) {

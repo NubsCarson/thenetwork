@@ -260,3 +260,23 @@ Rules for the boundary:
 - **No fencing on the save.** Two instances that both believe they hold a network's lock can overwrite each other's state (audit network-service-8).
 - **One network engine for every app.** Each app's ConsentNetwork is The Network's code with that app's brand words and join age. The NYC places, time zone and copy are NYC only. The slop and peon packs are wired (`packs.ts`); their matching is off only by the stored switch (`POST /matching`).
 - **Phones of platform members are in `platform.phone_identities` only.** `network.channel_identities` allows one member per address, so it cannot hold a phone that is a member of two apps. Console views that read phones from `channel_identities` do not see platform members.
+
+
+### Isolated signed-route receiver
+
+`NETWORK_ROUTE_AUTHORITY_POLICY` is optional server-only JSON, accepted only with
+`PLATFORM_ENV=staging`. Its exact shape is `{authority: {version: 1, routeId,
+generation, audience, realmId}, admitUntil, drainUntil}`; deadlines are integer
+server epoch milliseconds with `0 < admitUntil <= drainUntil`.
+A distinct realm uses its own `SERVICE_TURN_SECRET`. No URL, key or sender clock
+is carried in the signed authority envelope. Absent policy keeps legacy requests
+without an authority unchanged and refuses requests that carry one.
+
+New turns require the exact configured tuple before `admitUntil`; the inbox claim
+stores that tuple atomically in `platform.inbound.network_authority` (migration
+0036). Until `drainUntil`, only an existing matching turn may replay or accept its
+normal receipt/actions. Original signed raw-body hashes and member/app ownership
+checks remain mandatory. Relay and unbound outbound Cloud sends are refused in
+an isolated realm. Handled replies still use the gateway's original signed turn
+and receipt path. No production route or credential is changed by setting up this
+receiver code; isolated runtime configuration requires its separate deployment.
