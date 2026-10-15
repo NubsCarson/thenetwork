@@ -26,7 +26,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { SQL } from "bun";
 import { isDeepStrictEqual } from "node:util";
-import { DAY, RealClock, type Clock, type City, type MemberId } from "@thenetwork/core";
+import { DAY, LLMBudget, RealClock, recommenderLLM, type Clock, type City, type MemberId } from "@thenetwork/core";
 import type { ActionResult, NetworkOptions, ReviewDecision, ReviewOptions } from "../src/network.ts";
 import { brandOf, copy as ntwrkCopy, copyFor, ELIZA_NOTICE, type Copy } from "../src/copy.ts";
 import { isMinor } from "@thenetwork/core";
@@ -314,6 +314,13 @@ export class NetworkService implements RuntimeHost {
     this.sql = new SQL({ url: o.url, max: Math.max(8, 2 * specs.length + 4), connection: { application_name: `network-service:${this.instance}` } });
     this.people = o.people ?? new PgPeopleStore(this.sql);
     this.cost = new CostLedger({ sink: new PgCostSink(this.sql), clock: this.clock, rates: costRatesFromEnv(this.env), log: this.log });
+    // Opt-in only. One process-wide budget covers all apps and provider retries.
+    const judgeOn = this.env.NETWORK_ENGINE_JUDGE === "1";
+    const judgeUsd = Number(this.env.NETWORK_ENGINE_JUDGE_BUDGET_USD ?? 1);
+    const judgeRequests = Number(this.env.NETWORK_ENGINE_JUDGE_MAX_REQUESTS ?? 100);
+    if (judgeOn && (!Number.isFinite(judgeUsd) || judgeUsd <= 0 || !Number.isSafeInteger(judgeRequests) || judgeRequests <= 0))
+      throw new Error("NETWORK_ENGINE_JUDGE needs a positive dollar budget and a positive integer request limit");
+    const judgeBudget = judgeOn ? new LLMBudget({ maxCostMicro: judgeUsd * 1e6, maxRequests: judgeRequests }) : undefined;
     this.accounts = new Accounts(this.people, { hashKey: this.hashKey, now: () => this.clock.now(), env: this.env, apps: id => this.apps[id], hooks: this.hooks() });
     if (o.notify !== false) this.notify = new Notifier(o.notify ?? new PgNotifyStore(this.sql), { get: personId => this.notifyRecipient(personId) });
     for (const spec of specs) {
@@ -323,7 +330,11 @@ export class NetworkService implements RuntimeHost {
       // Dev only: the stored switch of these networks starts on (a new state); production always starts off.
       const devOn = (o.devMatching ?? []).includes(id);
       if (devOn && !devShortcutsAllowed(this.env)) throw new Error("devMatching is for PLATFORM_ENV=dev only: production matching is turned on by an admin in the console");
-      this.runtimes.set(id, new NetworkRuntime(this, { id, app: this.apps[app], city, matchingAllowed: spec.matchingEnabled ?? true, network: devOn ? { ...o.network, matchingEnabled: true } : o.network, adapter: o.adapter }));
+      const network = { ...o.network,
+        ...(judgeBudget && !o.network?.engineLLM ? { engineLLM: recommenderLLM({ ...this.cost.llmHooks(app, "engine_judge"), budget: judgeBudget }) } : {}),
+        ...(devOn ? { matchingEnabled: true } : {}),
+      };
+      this.runtimes.set(id, new NetworkRuntime(this, { id, app: this.apps[app], city, matchingAllowed: spec.matchingEnabled ?? true, network, adapter: o.adapter }));
     }
     this.photoBaseUrl = o.photoBaseUrl ?? this.env.PHOTO_VIEW_BASE_URL ?? undefined;
     this.photos = new PhotoService({

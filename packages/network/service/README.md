@@ -74,7 +74,25 @@ Errors follow the other actions: 400 `invalid_request` or `invalid_relay`, 401 o
 
 ## Costs
 
-`cost.ts` writes `network.cost_ledger` rows (codes and counts only): Twilio Verify codes, Clef photo ratings, relay Clef classifier calls (kind `other`, provider `workers_ai`, `detail.purpose = "relay_classifier"`; `COST_CLEF_RELAY_USD` per call, else the engine's list price per input token), LLM attempts, SMS fallbacks and the line. The service has no production LLM client today: it never builds `defaultLLM()` or `llmUnderstand`, and slop onboarding uses the engine's rule reader. A client added later passes `cost.llmHooks(app, purpose)` with the real app and purpose. A dedicated `workers_ai_call` kind needs a migration (migration 0020 constrains the kinds). Test: `packages/network/test/cost.integration.test.ts`.
+`cost.ts` writes `network.cost_ledger` rows (codes and counts only): Twilio Verify codes, Clef photo ratings, relay Clef classifier calls (kind `other`, provider `workers_ai`, `detail.purpose = "relay_classifier"`; `COST_CLEF_RELAY_USD` per call, else the engine's list price per input token), LLM attempts, SMS fallbacks and the line. The matching judge is off by default. `NETWORK_ENGINE_JUDGE=1` uses the existing `recommenderLLM()` and records `engine_judge` costs per app. The member conversation remains in Eliza, and slop onboarding uses the rules reader. A dedicated `workers_ai_call` kind needs a migration (migration 0020 constrains the kinds). Test: `packages/network/test/cost.integration.test.ts`.
+
+## Matching judge in staging
+
+Set `NETWORK_ENGINE_JUDGE=1` only for a bounded qualification run. `NETWORK_ENGINE_JUDGE_BUDGET_USD` defaults to 1 dollar. `NETWORK_ENGINE_JUDGE_MAX_REQUESTS` defaults to 100 HTTP attempts, including retries. The shared process budget resets on restart; it is not a daily account limit.
+
+The client uses the existing `RECOMMENDER_PROVIDER` and `RECOMMENDER_MODEL` settings. An explicit `network.engineLLM` still takes precedence. This flag does not enable matching, approve proposals, or enable sends. Keep the normal human review and consent steps. Keep delivery dry-run.
+
+Inspect `network.matching_runs.summary.matchingJudge` for calls, failures, valid verdicts and selected coverage. A failed judge can leave heuristic candidates eligible; do not count those as AI-qualified. Friends has no judge pack and makes no judge calls. The service still matches NYC candidates only.
+
+Real-model qualification with fictional adults on a throwaway local Postgres database:
+
+```bash
+NETWORK_ENGINE_JUDGE=1 NETWORK_ENGINE_JUDGE_BUDGET_USD=0.25 NETWORK_ENGINE_JUDGE_MAX_REQUESTS=12 \
+  bun test --conditions eliza-source --timeout 300000 \
+  packages/network/test/slop-date-path.integration.test.ts --test-name-pattern 'join, onboard'
+```
+
+This uses the configured provider and sends no member texts. It does not prove a deployed staging release or a real-person introduction.
 
 ## Run it
 
