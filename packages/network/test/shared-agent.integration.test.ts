@@ -425,3 +425,38 @@ test("members sharing a first name receive their own context without another per
   }
   expect(escaped).toBe(before);
 }, 60_000);
+
+// This regression must fail on the old UPDATES path: markSeen committed before
+// the later route check rejected completion, silently consuming the unread item.
+test("expired isolated updates roll back unread and surface changes after a notify row wait", async () => {
+  server.stop(true); await service.close();
+  const authority={version:1 as const,routeId:"updates-route",generation:"g1",audience:"updates-qa",realmId:"updates-qa"};
+  const policy={authority,admitUntil:clock.now()+10*MINUTE,drainUntil:clock.now()+20*MINUTE};await start(policy);
+  const phone="+12125550781";let step=0;
+  const qa=(text:string)=>({...turn(`updates-drain-${++step}`,phone,text,"friends"),networkAuthority:authority});
+  for(const[index,text]of["friends.help","Talia, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()){
+    if(index>=2)clock.advance(MINUTE);
+    const response=await post(qa(text));expect(response.status).toBe(200);
+  }
+  const open=qa("Tell me about the weather"),opened=await(await post(open)).json()as any;
+  expect({stage:"updates regression open parent",body:opened}).toMatchObject({body:{outcome:"open"}});
+  const person=await service.accounts.personFor(phone);expect(person).toBeDefined();
+  const[item]=await sql`insert into notify.inbox_items(dedupe_key,person_id,app_id,event_type,subject_id,urgency,summary,created_at)
+    values('updates-drain-unread',${person!.id},'friends','test','updates-drain-unread','requested','Your requested update is ready.',${new Date(clock.now())})returning id`;
+  const surfaceBefore=await sql`select surface,active,last_used_at,acted,ignored,ignored_streak from notify.surface_signals where person_id=${person!.id}order by surface`;
+  const locker=new SQL({url,max:1});let release!:()=>void,locked!:()=>void;
+  const gate=new Promise<void>(r=>{release=r;}),acquired=new Promise<void>(r=>{locked=r;});
+  const held=locker.begin(async tx=>{await tx`select id from notify.inbox_items where id=${item.id}for update`;locked();await gate;});await acquired;
+  let pending:Promise<Response>|undefined;
+  try{
+    const body=JSON.stringify({channel:open.channel,messageId:open.messageId,app:opened.app,memberId:opened.memberId,networkAuthority:authority});
+    pending=fetch(new URL("/internal/updates",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/updates",id:`${open.messageId}:updates`,body,nowS:Math.floor(clock.now()/1000)})},body});
+    const deadline=Date.now()+5000;let waiters=0;
+    while(Date.now()<deadline){const[row]=await admin`select count(*)::int as count from pg_stat_activity where datname=${db}and wait_event_type='Lock'and lower(query)like'%notify.inbox_items%'`;waiters=row.count;if(waiters)break;await Bun.sleep(10);}
+    expect(waiters).toBeGreaterThan(0);clock.advance(policy.drainUntil-clock.now());release();await held;
+    expect((await pending).status).toBe(403);
+    const[after]=await sql`select seen_at,seen_on from notify.inbox_items where id=${item.id}`;
+    expect(after).toEqual({seen_at:null,seen_on:null});
+    expect(await sql`select surface,active,last_used_at,acted,ignored,ignored_streak from notify.surface_signals where person_id=${person!.id}order by surface`).toEqual(surfaceBefore);
+  }finally{release();await held;if(pending)await pending.catch(()=>undefined);await locker.close();server.stop(true);await service.close();await start();}
+},60_000);
