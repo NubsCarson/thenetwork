@@ -1,6 +1,7 @@
 // Normal OAuth and phone-session HTTP flow. Only OTP delivery is controlled; no real person/provider.
 import {expect, test} from "bun:test";
 import {createPublicApi, APPS} from "@thenetwork/platform";
+import {MemoryOAuthStore} from "../src/store.ts";
 import {call, connect, PHONE_A, PHONE_B, setup} from "./harness.ts";
 
 const claim = (e: ReturnType<typeof setup>, cookie: string, domain = "friends.help", origin = `https://${domain}`) =>
@@ -86,4 +87,78 @@ test("normal account view distinguishes same-last-four phone sessions and never 
   expect(a.phoneMasked).toBe(b.phoneMasked);expect(a.signupView).toMatch(/^[a-f0-9]{64}$/);expect(a.signupView).not.toBe(b.signupView);
   expect((await(await claim(e,cookieA)).json()as any).signupView).toBe(a.signupView);
   expect((await me(`sid_friends=${a.signupView}`)).status).toBe(401);
+  // A phone awaiting recycled-number review has no Join view to prefill.
+  await e.accounts.createPerson(PHONE_A,"otp_sms",29);
+  await e.people.setPhoneHold(PHONE_A,"recycled_number");
+  expect(await(await me(cookieA)).json()).toMatchObject({canJoin:false,reason:"review"});
+  expect(await(await me(cookieA)).json()).not.toHaveProperty("signupView");
+});
+
+const join = async(e:ReturnType<typeof setup>,cookie:string,age:number)=>{
+  // Separate Accounts instances share the canonical PeopleStore lifecycle (as web/text entrypoints do).
+  const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"},minStartMs:0,minVerifyMs:0});
+  return (await api.fetch(new Request("https://friends.help/api/join",{method:"POST",headers:{host:"friends.help",origin:"https://friends.help",cookie,"content-type":"application/json"},body:JSON.stringify({firstName:"Ari",age,homeCity:"sf",consent:{sms:true,wording:APPS.friends.consent.text}})})))!;
+};
+
+test("normal under13 refusal immediately scrubs drafts across apps without a browser read; prior lower age survives an older retry",async()=>{
+  const e=setup(),f=await connect(e,"friends.help",PHONE_A),n=await connect(e,"ntwrk.party",PHONE_A),other=await connect(e,"friends.help",PHONE_B);
+  for(const [domain,token] of [["friends.help",f.token.access_token],["ntwrk.party",n.token.access_token],["friends.help",other.token.access_token]])
+    expect((await call(e,`https://${domain}/mcp`,"prepare_signup",{firstName:"Ari",homeCity:"sf"},{token})).body!.result.structuredContent.prepared).toBe(true);
+  const cookie=await browser(e,PHONE_A),denied=await join(e,cookie,12);
+  expect(denied.status).toBe(400);expect(await denied.json()).toMatchObject({error:"under_age"});
+  // Inspect storage BEFORE another read: hiding the response alone is not cleanup.
+  const key=e.accounts.phoneHash(PHONE_A);
+  expect([...(e.store as MemoryOAuthStore).signupDrafts.values()].filter(d=>d.phoneKey===key).map(d=>d.fields)).toEqual([{firstName:""},{firstName:""}]);
+  expect([...(e.store as MemoryOAuthStore).signupDrafts.values()].find(d=>d.phoneKey!==key)!.fields).toEqual({firstName:"Ari",homeCity:"sf"});
+  expect(await e.accounts.personFor(PHONE_A)).toBeUndefined();expect(await e.people.consentEvents(PHONE_A,"friends")).toHaveLength(0);
+  expect(await(await claim(e,cookie)).json()).toMatchObject({draft:null});
+  // Another app and a fresh grant cannot forget the canonical lower age.
+  const retry=await connect(e,"ntwrk.party",PHONE_A);
+  expect((await call(e,"https://ntwrk.party/mcp","prepare_signup",{firstName:"Rae"},{token:retry.token.access_token})).body!.result.isError).toBe(true);
+  expect(await(await join(e,cookie,29)).json()).toMatchObject({error:"under_age"});
+  expect(await e.people.ageFloor(key)).toBe(12);expect(await e.accounts.personFor(PHONE_A)).toBeUndefined();
+});
+
+test("backend refusal also scrubs when the canonical lower age belongs to an existing person",async()=>{
+  const e=setup(),c=await connect(e,"friends.help",PHONE_A);
+  await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token:c.token.access_token});
+  await e.accounts.createPerson(PHONE_A,"otp_sms",12);
+  expect(await(await join(e,await browser(e,PHONE_A),29)).json()).toMatchObject({error:"under_age"});
+  expect([...(e.store as MemoryOAuthStore).signupDrafts.values()][0].fields).toEqual({firstName:""});
+  expect(await e.people.ageFloor(e.accounts.phoneHash(PHONE_A))).toBe(12);
+});
+
+const gate=()=>{let open!:()=>void;const promise=new Promise<void>(resolve=>{open=resolve;});return{promise,open};};
+test("an age lowering waits for an in-flight approved draft write, then scrubs before returning",async()=>{
+  const e=setup(),c=await connect(e,"friends.help",PHONE_A),entered=gate(),release=gate();
+  const put=e.store.putSignupDraft.bind(e.store);
+  e.store.putSignupDraft=async(d,at)=>{entered.open();await release.promise;return put(d,at);};
+  const pending=call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token:c.token.access_token});
+  await entered.promise;
+  const lower=e.accounts.recordAge(PHONE_A,undefined,12);
+  expect(await e.people.ageFloor(e.accounts.phoneHash(PHONE_A))).toBeUndefined();
+  release.open();expect((await pending).body!.result.structuredContent.prepared).toBe(true);await lower;
+  expect([...(e.store as MemoryOAuthStore).signupDrafts.values()][0].fields).toEqual({firstName:""});
+  expect(await(await claim(e,await browser(e,PHONE_A))).json()).toMatchObject({draft:null});
+});
+
+test("a draft write queued behind canonical lowering cannot reintroduce scrubbed facts",async()=>{
+  const e=setup(),c=await connect(e,"friends.help",PHONE_A),entered=gate(),release=gate();
+  const discard=e.store.discardSignupDrafts.bind(e.store);
+  e.store.discardSignupDrafts=async(...args)=>{entered.open();await release.promise;return discard(...args);};
+  const lower=e.accounts.recordAge(PHONE_A,undefined,12);await entered.promise;
+  const pending=call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token:c.token.access_token});
+  release.open();await lower;
+  expect((await pending).body!.result.isError).toBe(true);expect((e.store as MemoryOAuthStore).signupDrafts.size).toBe(0);
+  expect(await e.accounts.personFor(PHONE_A)).toBeUndefined();expect(await e.people.consentEvents(PHONE_A,"friends")).toHaveLength(0);
+});
+
+
+test("draft cleanup failure never skips the canonical person-age safety hook",async()=>{
+  const e=setup(),person=await e.accounts.createPerson(PHONE_A,"otp_sms",29),lowered:number[]=[];
+  const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"},onAgeLowered:({age})=>{lowered.push(age);}});
+  e.people.setAgeFloorCleanup(async()=>{throw new Error("controlled storage failure");});
+  await expect(api.accounts.recordAge(PHONE_A,person,12)).rejects.toThrow("controlled storage failure");
+  expect(await e.people.ageFloor(e.accounts.phoneHash(PHONE_A))).toBe(12);
+  expect((await e.people.getPerson(person.id))!.lowestAge).toBe(12);expect(lowered).toEqual([12]);
 });

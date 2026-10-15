@@ -84,12 +84,26 @@ export class PgPeopleStore implements PeopleStore {
     const [r] = await this.sql`select lowest_age from platform.age_floor where phone_hash = ${phoneHash}`;
     return r ? (r.lowest_age as number) : undefined;
   }
+  private ageTail: Promise<unknown> = Promise.resolve();
+  private ageCleanup?: (phoneHash: string, age: number) => Promise<void>;
+  setAgeFloorCleanup(fn: (phoneHash: string, age: number) => Promise<void>) { this.ageCleanup = fn; }
+  withPhoneAgeGuard<T>(phoneHash: string, fn: () => Promise<T>): Promise<T> {
+    // Separate from withLock's join queue: no recursive lockTail wait. Waiters reserve no connection.
+    // Normal pools have four connections: join lock + age lock + ordinary queries fit without a nested reservation queue.
+    const run = this.ageTail.then(() => this.advisory(`phone-age:${phoneHash}`, fn), () => this.advisory(`phone-age:${phoneHash}`, fn));
+    this.ageTail = run.catch(() => {});
+    return run;
+  }
   async noteAgeFloor(phoneHash: string, age: number, at: number) {
-    const [r] = await this.sql`insert into platform.age_floor (phone_hash, lowest_age, at) values (${phoneHash}, ${age}, ${ts(at)})
-      on conflict (phone_hash) do update set lowest_age = least(platform.age_floor.lowest_age, excluded.lowest_age),
-        at = case when excluded.lowest_age < platform.age_floor.lowest_age then excluded.at else platform.age_floor.at end
-      returning lowest_age`;
-    return r!.lowest_age as number;
+    return this.withPhoneAgeGuard(phoneHash, async () => {
+      const [r] = await this.sql`insert into platform.age_floor (phone_hash, lowest_age, at) values (${phoneHash}, ${age}, ${ts(at)})
+        on conflict (phone_hash) do update set lowest_age = least(platform.age_floor.lowest_age, excluded.lowest_age),
+          at = case when excluded.lowest_age < platform.age_floor.lowest_age then excluded.at else platform.age_floor.at end
+        returning lowest_age`;
+      const lowest = r!.lowest_age as number;
+      await this.ageCleanup?.(phoneHash, lowest);
+      return lowest;
+    });
   }
   async clearAgeFloor(phoneHash: string) {
     await this.sql`delete from platform.age_floor where phone_hash = ${phoneHash}`;

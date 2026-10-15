@@ -280,11 +280,17 @@ export class Accounts {
   /** Record a stated age: the phone's age floor and the person (if any) keep the lowest. Every app's member follows a lower age. */
   async recordAge(e164: string, person: Person | undefined, age: number): Promise<void> {
     if (!validAge(age)) return;
-    await this.store.noteAgeFloor(this.phoneHash(e164), age, this.now());
-    if (!person) return;
-    const before = (await this.store.getPerson(person.id))?.lowestAge ?? null;
-    const after = await this.store.noteAge(person.id, age);
-    if (before === null || after < before) await this.hooks.onAgeLowered?.({ personId: person.id, age: after });
+    const current = person && await this.store.getPerson(person.id);
+    try {
+      await this.store.noteAgeFloor(this.phoneHash(e164), lowestAge(age, current?.lowestAge)!, this.now());
+    } finally {
+      // A temporary-data cleanup failure must not prevent the existing person-level safety update.
+      if (person) {
+        const before = (await this.store.getPerson(person.id))?.lowestAge ?? null;
+        const after = await this.store.noteAge(person.id, age);
+        if (before === null || after < before) await this.hooks.onAgeLowered?.({ personId: person.id, age: after });
+      }
+    }
   }
 
   /** A new person for a verified phone (or the tombstone of this phone's earlier person, revived). */

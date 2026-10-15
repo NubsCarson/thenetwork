@@ -3,7 +3,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { randomUUID } from "node:crypto";
-import { APPS } from "@thenetwork/platform";
+import { APPS, createPublicApi, PgPeopleStore } from "@thenetwork/platform";
+import { migrate } from "../../observatory/db/migrate.ts";
 import { DEV_PG_PORT, devPgUp } from "../../observatory/db/dev-pg.ts";
 import { pgAvailable } from "../../observatory/test/pg.ts";
 import { PgOAuthStore } from "../src/pg-store.ts";
@@ -71,6 +72,55 @@ describe.skipIf(!EXPLICIT_PG && !pgAvailable)("PgOAuthStore", () => {
       expect(await restarted.claimSignupDraft(env.accounts.phoneHash(PHONE_A), "friends", null, env.clock.t)).toEqual({ firstName: "Tess" });
     } finally { await restarted.close(); }
   });
+
+  test("canonical phone age scrubs drafts immediately and serializes both write orders across PG store instances", async () => {
+    await migrate(testUrl.toString(), { lockTimeout: "5s" });
+    const people = new PgPeopleStore(testUrl.toString()), writer = new PgPeopleStore(testUrl.toString());
+    const e = setup({ store });
+    const api = (p: PgPeopleStore) => createPublicApi({ store:p, otp:e.provider, hashKey:"test-hash-key", sessionSecret:"test-session-secret", now:()=>e.clock.t, env:{PLATFORM_ENV:"dev"}, minStartMs:0, minVerifyMs:0 });
+    const web=api(people), other=api(writer);
+    const handler = (p: PgPeopleStore, a: ReturnType<typeof api>) => createMcpHandler({ store, now:()=>e.clock.t, minOtpStartMs:0, platform:platformHooks({store:p,accounts:a.accounts,otp:a.otp,sessions:a.sessions,app:id=>APPS[id],cookieName:id=>`sid_${id}`}) });
+    const h=handler(people,web); handler(writer,other); // another normal backend, same keyed-phone advisory guard
+    const env={...e,fetch:async(req:Request)=>(await h.fetch(req))!};
+    const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>{resolve=r;});return{promise,resolve};};
+    const blocked=async()=>{
+      for(let i=0;i<100;i++) {
+        const rows=await people.sql`select 1 from pg_locks where database=(select oid from pg_database where datname=current_database()) and locktype='advisory' and not granted`;
+        if(rows.length) return;
+        await new Promise(r=>setTimeout(r,5));
+      }
+      throw new Error("Expected a real waiting phone-age advisory lock");
+    };
+    const put=store.putSignupDraft.bind(store),discard=store.discardSignupDrafts.bind(store);
+    const phone="+12125550174", key=web.accounts.phoneHash(phone);
+    try {
+      const c=await connect(env,"friends.help",phone),entered=deferred(),release=deferred();
+      store.putSignupDraft=async(d,at)=>{entered.resolve();await release.promise;return put(d,at);};
+      const prepare=call(env,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token:c.token.access_token});
+      await entered.promise;
+      const lower=other.accounts.recordAge(phone,undefined,12);
+      try { await blocked(); expect(await people.ageFloor(key)).toBeUndefined(); }
+      finally { release.resolve(); }
+      expect((await prepare).body!.result.structuredContent.prepared).toBe(true);await lower;
+      expect((await store.sql`select fields from oauth.signup_drafts where phone_key=${key}`)[0].fields).toEqual({});
+      expect(await web.accounts.personFor(phone)).toBeUndefined();expect(await people.consentEvents(phone,"friends")).toHaveLength(0);
+      store.putSignupDraft=put;
+      // Older age on another app never raises the canonical floor or permits a new approved draft.
+      const n=await connect(env,"ntwrk.party",phone);
+      expect((await call(env,"https://ntwrk.party/mcp","prepare_signup",{firstName:"Rae"},{token:n.token.access_token})).body!.result.isError).toBe(true);
+      await other.accounts.recordAge(phone,undefined,29);expect(await people.ageFloor(key)).toBe(12);
+      const sid=await web.sessions.create("friends",phone,null);
+      expect(await(await h.fetch(new Request("https://friends.help/oauth/signup-draft",{method:"POST",headers:{cookie:`sid_friends=${sid.token}`,origin:"https://friends.help"},body:"{}"})))!.json()).toMatchObject({draft:null});
+      // Opposite order: lowering holds the shared guard while cleanup waits on real storage I/O.
+      const second="+12125550175",next=await connect(env,"friends.help",second),cleaning=deferred(),finish=deferred();
+      store.discardSignupDrafts=async(...args)=>{cleaning.resolve();await finish.promise;return discard(...args);};
+      const before=other.accounts.recordAge(second,undefined,12);await cleaning.promise;
+      const pending=call(env,"https://friends.help/mcp","prepare_signup",{firstName:"Tess"},{token:next.token.access_token});
+      try { await blocked(); } finally { finish.resolve(); }
+      await before;expect((await pending).body!.result.isError).toBe(true);
+      expect((await store.sql`select fields from oauth.signup_drafts where phone_key=${web.accounts.phoneHash(second)}`).length).toBe(0);
+    } finally { store.putSignupDraft=put;store.discardSignupDrafts=discard;await people.close();await writer.close(); }
+  },120_000);
 
   test("full flow, refresh rotation and replay, with hashes only at rest", async () => {
     const env = setup({ store });

@@ -161,6 +161,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
   }
   const store = o.store ?? new MemoryOAuthStore();
   const now = o.now ?? Date.now;
+  o.platform.setSignupAgeCleanup?.((key, app) => store.discardSignupDrafts(key, app, now()));
   const ttl = { ...TTL, ...o.ttl };
   const lim = { ...LIMITS, ...o.limits };
   const log = o.log ?? (s => console.log(s));
@@ -798,11 +799,14 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
           await store.discardSignupDrafts(key, c.app.id, now());
           return json(200, { discarded: true }, who.setCookie ? { "set-cookie": who.setCookie } : {});
         }
-        if (who.personId !== null && !["not_joined", "invited"].includes(await o.platform.status(who.personId, c.app.id))) return json(403, { error: "not_allowed" });
-        const draft = await store.claimSignupDraft(key, c.app.id, who.personId, now());
-        const response = json(200, { draft: draft ?? null, signupView: signupAccountView(c.app.id, key) }, { "cache-control": "no-store" });
-        if (who.setCookie) response.headers.append("set-cookie", who.setCookie);
-        return response;
+        if (!o.platform.withSignupAgePolicy || !o.platform.setSignupAgeCleanup) return json(403, { error: "not_allowed" });
+        return o.platform.withSignupAgePolicy(key, c.app.id, async allowed => {
+          if (who.personId !== null && !["not_joined", "invited"].includes(await o.platform.status(who.personId, c.app.id))) return json(403, { error: "not_allowed" });
+          const draft = allowed ? await store.claimSignupDraft(key, c.app.id, who.personId, now()) : undefined;
+          const response = json(200, { draft: draft ?? null, signupView: signupAccountView(c.app.id, key) }, { "cache-control": "no-store" });
+          if (who.setCookie) response.headers.append("set-cookie", who.setCookie);
+          return response;
+        });
       }
       case "/oauth/register": {
         const res = await register(c);

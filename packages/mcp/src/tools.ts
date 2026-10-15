@@ -251,16 +251,21 @@ export async function callTool(name: ToolName, args: unknown, c: CallContext): P
       };
     }
     case "prepare_signup": {
-      const g = c.grant;
-      if (!g || !c.store) return { kind: "invalid_grant" };
-      const person = await c.hooks.personForKey(g.phoneKey);
-      if (!grantStillTheirs(g.personId, person)) return { kind: "invalid_grant" };
-      const status = person === null ? "not_joined" : await c.hooks.status(person, g.app);
-      if (status !== "not_joined" && status !== "invited") return { kind: "error", message: "Use your existing profile; this form is for joining." };
-      const at = c.now ?? Date.now();
-      const saved = await c.store.putSignupDraft({ grantId: g.id, app: g.app, phoneKey: g.phoneKey, fields: chk.draft!, expiresAt: Math.min(at + 10 * 60_000, g.expiresAt), consumedAt: null }, at);
-      return saved ? { kind: "ok", data: { prepared: true, app: g.app, url: `${c.apps[g.app].links.join}?via=agent`, next_step: "Open Join to review or edit your name and home city. Your age and text consent are still yours to enter." } }
-        : { kind: "error", message: "This connection already prepared a draft or is no longer valid. Open Join to enter or edit your details." };
+      const g = c.grant, store = c.store;
+      if (!g || !store) return { kind: "invalid_grant" };
+      if (!c.hooks.withSignupAgePolicy || !c.hooks.setSignupAgeCleanup) return { kind: "error", message: "Use the normal Join form to enter your details." };
+      const started = performance.now(), requestedAt = c.now ?? Date.now();
+      return c.hooks.withSignupAgePolicy(g.phoneKey, g.app, async allowed => {
+        if (!allowed) return { kind: "error", message: "We cannot prepare this Join form. Check the joining requirements on the site." };
+        const person = await c.hooks.personForKey(g.phoneKey);
+        if (!grantStillTheirs(g.personId, person)) return { kind: "invalid_grant" };
+        const status = person === null ? "not_joined" : await c.hooks.status(person, g.app);
+        if (status !== "not_joined" && status !== "invited") return { kind: "error", message: "Use your existing profile; this form is for joining." };
+        const at = requestedAt + Math.ceil(performance.now() - started);
+        const saved = await store.putSignupDraft({ grantId: g.id, app: g.app, phoneKey: g.phoneKey, fields: chk.draft!, expiresAt: Math.min(requestedAt + 10 * 60_000, g.expiresAt), consumedAt: null }, at);
+        return saved ? { kind: "ok", data: { prepared: true, app: g.app, url: `${c.apps[g.app].links.join}?via=agent`, next_step: "Open Join to review or edit your name and home city. Your age and text consent are still yours to enter." } }
+          : { kind: "error", message: "This connection already prepared a draft or is no longer valid. Open Join to enter or edit your details." };
+      });
     }
     case "check_status": {
       const g = c.grant;
