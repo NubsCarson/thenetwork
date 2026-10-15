@@ -26,9 +26,9 @@ reply-style block. The candidate adds these directions:
 - Preserve necessary consent, legal, safety, privacy and age restrictions.
 
 These are instructions to the assistant, not a deterministic response formatter. Generated text
-and successful build checks do not prove that a model follows them. A candidate attachment rendered
-against the existing isolated staging authorities was prepared for the owner to evaluate in the real
-conversation. It is not the currently served skill and was not deployed by this change.
+and successful build checks do not prove that a model follows them. The first comparisons used
+candidate attachments rendered against the isolated staging authorities. Those comparisons used
+pasted context, not a newly retrieved skill.
 
 The owner evaluated the first candidate in the real conversation. It corrected the settings advice
 and future-text promise, but remained too long and described connection/submission mechanics. The
@@ -42,6 +42,26 @@ matching claim. It still used four sentences rather than the preferred one to th
 bounded improvement, not strict acceptance of every style criterion or proof across all three apps.
 The generated candidate was pasted as context in the existing isolated conversation; the assistant
 did not retrieve a newly deployed skill. No personal screenshots or raw profile text are included.
+
+## Follow-up after published-skill checks
+
+The owner later published the reviewed staging assembly and checked ordinary explanation-only prompts.
+The Network response cited skill version 1.1.3 but used 117 words across five paragraphs and asked
+a personal onboarding question despite the request not to sign up or change anything. Slop cited
+version 1.1.2 but used 168 words across six text blocks, announced the guide version, and described
+private onboarding with operator and connection jargon. These are observed failures, not style passes.
+
+This follow-up tells the assistant to answer explanation-only requests without starting signup or
+asking profile questions. It removes guide/version announcements and asks for ordinary supported
+choices instead of internal approval mechanics. A short signup explanation should cover the app's
+invitation rule, one supported first step, relevant age limits and agreement before introductions.
+Actual app eligibility, age and consent facts stay unchanged.
+
+The follow-up receives new skill and plugin patch versions. The owner has candidate-context probes
+prepared; no after-response pass is claimed here. A pasted-candidate result is not served-skill proof.
+Host readers can cache content independently. A cited version helps identify a read, but does not
+attest every instruction byte. Preserve the observed failures and verify the actual served artifact
+and later real response separately; do not explain a failure away merely as caching.
 
 ## Validation
 
@@ -65,6 +85,6 @@ not response quality. Canonical skills receive patch versions; the two plugin ma
 versions because their imported skill snapshots changed.
 
 No browser, GPT/model, provider, OTP, deployment or runtime action was performed by the implementation
-or independent source review. The owner's two real model comparisons are reported separately above.
-Later served-skill and three-app response acceptance remain separate gates; this patch does not enable
-matching or messages.
+or independent source review. The owner's real comparisons and later published-skill failures are
+reported separately above. The follow-up's candidate and served-skill response acceptance remain
+separate gates; this patch does not enable matching or messages.
