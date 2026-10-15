@@ -49,6 +49,10 @@ describe.skipIf(!EXPLICIT_PG && !pgAvailable)("PgOAuthStore", () => {
     const prepared = await call(env, "https://friends.help/mcp", "prepare_signup", { firstName: "Ari", homeCity: "sf" }, { token: c.token.access_token });
     expect(prepared.body!.result.structuredContent.prepared).toBe(true);
     expect(await env.accounts.personFor(PHONE_A)).toBeUndefined();
+    expect((await store.sql`select jsonb_typeof(fields) as kind from oauth.signup_drafts where phone_key=${env.accounts.phoneHash(PHONE_A)}`)[0].kind).toBe("object");
+    const session=await env.sessions.create("friends",PHONE_A,null);
+    const response=await env.fetch(new Request("https://friends.help/oauth/signup-draft",{method:"POST",headers:{cookie:`sid_friends=${session.token}`,origin:"https://friends.help","content-type":"application/json"},body:"{}"}));
+    expect(await response.json()).toMatchObject({draft:{firstName:"Ari",homeCity:"sf"},signupView:expect.any(String)});
     const restarted = new PgOAuthStore(testUrl.toString());
     try {
       expect(await restarted.claimSignupDraft(env.accounts.phoneHash("+12125550199"), "friends", null, env.clock.t)).toBeUndefined();

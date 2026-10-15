@@ -51,7 +51,7 @@ export class PgOAuthStore implements OAuthStore {
       if (grants.length !== 1) return false;
       const liveAt = at + Math.ceil(performance.now() - started);
       const rows = await tx`insert into oauth.signup_drafts(grant_id,app_id,phone_key,fields,expires_at,consumed_at)
-        select id,app_id,phone_key,${JSON.stringify(d.fields)}::jsonb,${new Date(d.expiresAt)},null from oauth.grants
+        select id,app_id,phone_key,${d.fields}::jsonb,${new Date(d.expiresAt)},null from oauth.grants
         where id=${d.grantId} and app_id=${d.app} and phone_key=${d.phoneKey} and revoked_at is null and expires_at>${new Date(liveAt)}
         and ${new Date(d.expiresAt)}>${new Date(liveAt)} and 'profile:write'=any(scopes)
         on conflict(grant_id) do nothing returning grant_id`;
