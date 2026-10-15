@@ -240,6 +240,8 @@ export function parseJoinText(text: string, appWords: readonly string[], nameOk:
   return { ...(age !== undefined ? { age } : {}), ...(name ? { name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() } : {}), ...(cities[0] ? { homeCity: cities[0] } : {}), ...(invalidHome ? { invalidHome: true } : {}) };
 }
 
+class RouteAuthorityExpiredError extends Error {}
+
 export class NetworkService implements RuntimeHost {
   readonly sql: SQL;
   readonly clock: Clock;
@@ -1707,6 +1709,11 @@ export class NetworkService implements RuntimeHost {
   }
 
   /** Agent actions inherit one completed open turn; receipts stay on that original inbound owner. */
+  private assertLockedRoute(value: unknown): void {
+    if (this.routePolicy && (!routeEnvelopeAllowed(this.routePolicy, value, this.clock.now())
+      || !sameNetworkAuthority(value, this.routePolicy.authority))) throw new RouteAuthorityExpiredError();
+  }
+
   private async sharedAction(path: string, b: Row, signedId: string, raw: string): Promise<Response> {
     const stateAction = path === SET_STATE_PATH;
     const keys = stateAction ? ["channel","messageId","app","memberId","idempotencyKey","state","from","until","note"]
@@ -1743,9 +1750,10 @@ export class NetworkService implements RuntimeHost {
       await tx`select set_config('app.app_id',${app},true)`;
       await tx`select member_id from platform.memberships where person_id=${who.person.id} and app_id=${app} for update`;
       await tx`select id from network.members where app_id=${app} and id=${memberId} for update`;
-      const [turn] = await tx`select status,response,sender_hash,action_receipts from platform.inbound where id=${turnId} for update`;
+      const [turn] = await tx`select status,response,sender_hash,action_receipts,network_authority from platform.inbound where id=${turnId} for update`;
       if (!turn || turn.status !== "done" || turn.sender_hash !== original.sender_hash || turn.response?.outcome !== "open"
         || turn.response.app !== app || turn.response.memberId !== memberId || !await authorized()) throw new Error("Original turn authority changed");
+      this.assertLockedRoute(turn.network_authority);
       return turn;
     };
     try {
@@ -1763,6 +1771,7 @@ export class NetworkService implements RuntimeHost {
       });
       if (claim.response) return claim.response;
       const complete = async (tx: SQL, result: Row) => {
+        this.assertLockedRoute(b.networkAuthority);
         const saved = await tx`update platform.inbound set action_receipts=jsonb_set(action_receipts,array[${id}],${{requestHash:digest,state:"completed",response:result}}::jsonb)
           where id=${turnId} and status='done' and action_receipts->${id}->>'requestHash'=${digest} and action_receipts->${id}->>'state'='processing' returning id`;
         if (!saved.length) throw new Error("Action ownership changed before completion");
@@ -1808,7 +1817,8 @@ export class NetworkService implements RuntimeHost {
         return result;
       });
       return json(result);
-    } catch {
+    } catch (error) {
+      if (error instanceof RouteAuthorityExpiredError) return json({error:"route_authority_invalid",retryable:false},403);
       await this.sql`update platform.inbound set action_receipts=jsonb_set(action_receipts,array[${id}],${{requestHash:digest,state:"unresolved"}}::jsonb)
         where id=${turnId} and status='done' and action_receipts->${id}->>'requestHash'=${digest} and action_receipts->${id}->>'state'='processing'`;
       return json({error:"action_unresolved",retryable:false},409);
@@ -1850,8 +1860,10 @@ export class NetworkService implements RuntimeHost {
         || !Array.isArray(b.providerMessageIds) || !b.providerMessageIds.every(x => typeof x === "string" && x.trim())
         || typeof b.historyRecorded !== "boolean" || !["accepted", "unknown", "rejected"].includes(b.outcome as string)) return json({error: "invalid_request"}, 400);
       const result = await this.sql.begin(async tx => {
-        const [claim] = await tx`select status,response,receipt_hash,receipt,replies from platform.inbound where id=${id} for update`;
+        const [claim] = await tx`select status,response,receipt_hash,receipt,replies,network_authority from platform.inbound where id=${id} for update`;
         if (!claim || claim.status !== "done" || claim.response?.outcome !== "handled") return json({error: "turn_unavailable", retryable: false}, 409);
+        if (this.routePolicy && !routeEnvelopeAllowed(this.routePolicy, claim.network_authority, this.clock.now()))
+          return json({error:"route_authority_invalid",retryable:false},403);
         if (claim.receipt_hash === digest) return json({ok: true, replayed: true});
         if (claim.receipt_hash && !(claim.receipt?.outcome === "unknown" && ["accepted", "rejected"].includes(b.outcome as string))) return json({error: "receipt_conflict", retryable: false}, 409);
         const collected = claim.replies as CollectedReply[];

@@ -321,3 +321,46 @@ test("route policy boot validation rejects malformed or non-staging authority", 
   expect(() => networkRoutePolicy({...env,PLATFORM_ENV:"production"})).toThrow();
   expect(() => networkRoutePolicy({...env,PLATFORM_ENV:"dev"})).toThrow();
 });
+
+// A real row lock holds both signed requests across the server's drain deadline.
+test("isolated actions and receipts recheck the drain window after database lock waits", async () => {
+  server.stop(true); await service.close();
+  const authority = {version:1 as const,routeId:"locked-route",generation:"g1",audience:"locked-qa",realmId:"locked-qa"};
+  const begin = clock.now(); await start({authority,admitUntil:begin+MINUTE,drainUntil:begin+2*MINUTE});
+  const help = {...turn("locked-help", "+12125550994", "HELP"),networkAuthority:authority};
+  const handled = await (await post(help)).json() as any;
+  let step=0;
+  const qa = (text:string) => ({...turn(`locked-open-${++step}`,"+12125550995",text,"friends"),networkAuthority:authority});
+  for (const text of ["friends.help","Noa, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"]) expect((await post(qa(text))).status).toBe(200);
+  const open=qa("Tell me about the weather"), opened=await (await post(open)).json() as any;
+  expect(opened.outcome).toBe("open");
+  const locker=new SQL({url,max:1}); let release!:()=>void, locked!:()=>void;
+  const released=new Promise<void>(resolve=>{release=resolve;}), acquired=new Promise<void>(resolve=>{locked=resolve;});
+  const transaction=locker.begin(async tx=>{
+    await tx`select id from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`}) order by id for update`;
+    locked(); await released;
+  });
+  await acquired;
+  try {
+    const ack={channel:help.channel,messageId:help.messageId,replyIds:handled.replyIds,outcome:"accepted" as const,providerMessageIds:["synthetic-locked-receipt"],historyRecorded:false,networkAuthority:authority};
+    const action={channel:open.channel,messageId:open.messageId,app:opened.app,memberId:opened.memberId,idempotencyKey:"locked-state-action",state:"busy",from:null,until:null,note:null,networkAuthority:authority};
+    const raw=JSON.stringify(action);
+    const pendingReceipt=receipt(ack);
+    const pendingAction=fetch(new URL("/internal/set-state",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/set-state",id:action.idempotencyKey,body:raw,nowS:Math.floor(clock.now()/1000)})},body:raw});
+    const deadline=Date.now()+5000; let waiters=0;
+    while(Date.now()<deadline){
+      const[row]=await admin`select count(*)::int as count from pg_stat_activity where datname=${db} and wait_event_type='Lock' and lower(query) like '%platform.inbound%'`;
+      waiters=row.count;if(waiters>=2)break;await Bun.sleep(10);
+    }
+    expect(waiters).toBeGreaterThanOrEqual(2);
+    clock.advance(2*MINUTE); release(); await transaction;
+    expect((await pendingReceipt).status).toBe(403);
+    expect((await pendingAction).status).toBe(403);
+    const rows=await sql`select id,receipt_hash,action_receipts from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`})`;
+    expect(rows.every(r=>r.receipt_hash===null&&Object.keys(r.action_receipts).length===0)).toBe(true);
+    const[m]=await sql`select participation_state from network.members where app_id='friends'and id=${opened.memberId}`;
+    expect(m.participation_state).not.toBe("quiet");
+    // Expired exact replays remain denied; an accepted receipt is not an extension of the window.
+    expect((await receipt(ack)).status).toBe(403);
+  } finally {release();await transaction;await locker.close();server.stop(true);await service.close();await start();}
+},60_000);
