@@ -358,7 +358,11 @@ test("isolated actions and receipts recheck the drain window after database lock
     expect((await pendingReceipt).status).toBe(403);
     expect((await pendingAction).status).toBe(403);
     const rows=await sql`select id,receipt_hash,action_receipts from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`})`;
-    expect(rows.every(r=>r.receipt_hash===null&&Object.keys(r.action_receipts).length===0)).toBe(true);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.receipt_hash).toBeNull();
+      expect(Object.keys(row.action_receipts)).toHaveLength(0);
+    }
     const[memberAfter]=await sql`select participation_state,participation_window from network.members where app_id='friends'and id=${opened.memberId}`;
     expect(memberAfter).toEqual(memberBefore);
     // Expired exact replays remain denied; an accepted receipt is not an extension of the window.
