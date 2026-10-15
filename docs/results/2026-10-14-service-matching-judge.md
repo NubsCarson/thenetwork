@@ -62,4 +62,5 @@ Judge failures or budget exhaustion can leave heuristic candidates eligible unde
 Inspect `matchingJudge` coverage before calling a run AI-qualified. Friends has no judge pack and makes no judge calls.
 The service still matches NYC candidates only. Bay Area profile intake does not prove Bay Area matching.
 
-Full offline simulations and typecheck are recorded separately when complete.
+Full offline validation: `bun run sim` passed 326/326 blocking gates in 1014.2 seconds. Fourteen tracked targets remain off target.
+`bun run typecheck` passed. These results do not establish pilot matching quality.
