@@ -107,6 +107,13 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
     const res = await busy(form, () => api.join(body));
     if (res.ok) {
       fill(root, { firstName: res.data.membership?.firstName ?? firstName });
+      const done = $(root, '[data-step="done"]');
+      if (new URLSearchParams(location.search).get("via") === "agent" && done && !done.querySelector("[data-agent-return]")) {
+        const next = document.createElement("p");
+        next.dataset.agentReturn = "";
+        next.textContent = "Go back to the same chat to finish setting up your profile.";
+        done.append(next);
+      }
       showStep(root, "done");
     } else if (res.error === "under_age" || res.error === "invite_only" || res.error === "review") {
       block(root, res.error);
