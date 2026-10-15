@@ -186,7 +186,7 @@ const NEXT: Record<PublicStatus, (a: McpApp) => string> = {
     : `Not joined. To join, open ${a.links.join} and sign up there.`,
   invited: a => `Invited. To accept, open ${a.links.join} or reply to the invitation text.`,
   onboarding: () => "Joining is not finished. Reply to the last text from the agent to finish.",
-  active: () => "Active. Nothing to do. The agent texts when it has something worth the person's time.",
+  active: () => "You are signed up.",
   stopped: a => `Messages are stopped. To start again, text START to the line or open ${a.links.settings}.`,
   on_hold: a => `On hold. The person should open ${a.links.settings} or email ${a.links.support.replace("mailto:", "")}.`,
 };
