@@ -92,6 +92,7 @@ test("updates use the canonical app inbox and replay its original receipt; uncer
   await sql.unsafe(`create trigger fail_read_fixture before update on notify.inbox_items for each row execute function notify.fail_read_fixture()`);
   try {
     expect((await post(UPDATES_PATH,action("unknown-updates-open"))).status).toBe(409);
+    expect((await sql`select last_value::int as last_value,is_called from notify.read_fault_attempts`)[0]).toEqual({last_value:1,is_called:true});
   } finally {
     await sql.unsafe(`drop trigger fail_read_fixture on notify.inbox_items; drop function notify.fail_read_fixture()`);
   }
