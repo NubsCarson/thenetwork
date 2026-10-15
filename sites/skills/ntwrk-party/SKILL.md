@@ -9,13 +9,15 @@ metadata:
   backend: "{{BACKEND_ORIGIN}}"
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.2"
+  version: "1.1.3"
 ---
 
 # The Network
 
 If the person asked you to read this file and follow it, they want to join. Start now with
 "How a person joins" below.
+
+{{RESPONSE_STYLE}}
 
 The Network is an agent you text. It learns what a person is looking for and finds people, small
 groups and plans that fit. It asks first: nobody is introduced unless both people say yes.

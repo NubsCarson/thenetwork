@@ -206,7 +206,9 @@ test("staging builds keep the served entry, skills and signed router on configur
     expect((await buildSite(slop, directory, env)).ok).toBe(true);
     expect((await buildSite(hub, hubDirectory, env)).ok).toBe(true);
     const home = readFileSync(join(directory, "index.html"), "utf8");
-    const prompt = `Read ${origins.slop}/SKILL.md?version=1.1.1 and follow it.`;
+    const builtSkill = readFileSync(join(directory, "SKILL.md"), "utf8");
+    const version = (Bun.YAML.parse(builtSkill.split("---")[1]!) as { metadata: { version: string } }).metadata.version;
+    const prompt = `Read ${origins.slop}/SKILL.md?version=${encodeURIComponent(version)} and follow it.`;
     expect(home).toContain(`<code data-prompt>${prompt}</code>`);
     expect(home).toContain(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`);
     for (const origin of ["https://chatgpt.com/", "https://claude.ai/new", "https://grok.com/", "https://gemini.google.com/app", "https://www.perplexity.ai/search"]) {
