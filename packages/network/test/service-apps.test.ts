@@ -332,6 +332,32 @@ describe.skipIf(!pgAvailable)("network service, several apps (Postgres)", () => 
     expect(parseJoinText("Sounds good, 7 works for me", words, true).age).toBeUndefined();
   }, T);
 
+  test("a plain name, age and supported city joins without moving the person's home to the matching city", async () => {
+    await applySchema(URL_, { reset: true, lockTimeout: "5s" });
+    const clock = new SimClock(START);
+    const { s } = service(clock);
+    for (const [answer, homeCity] of [["Ari, 29, San Francisco", "sf"], ["Ari, 29, New York", "nyc"],
+      ["Ari, 29, Bay Area", "sf"], ["Ari,29; I live in San Francisco", "sf"]]) {
+      const phone = newPhone();
+      expect(await text(s, clock, phone, "friends.help")).toBe("join_asked");
+      expect(await text(s, clock, phone, answer)).toBe("joined");
+      const person = await s.accounts.personFor(phone);
+      expect(person?.lowestAge).toBe(29);
+      const [member] = await sql`select m.name,m.home_city,m.age,pm.profile->>'homeCity' as profile_home
+        from network.members m join platform.memberships pm on pm.member_id=m.id and pm.app_id=m.app_id
+        where m.person_id=${person!.id}::uuid and m.app_id=${FR}`;
+      expect(member).toMatchObject({ name: "Ari", home_city: homeCity, age: 29, profile_home: homeCity });
+      expect(await consentOf(phone, FR)).toBe("opted_in");
+    }
+    for (const answer of ["Ari, 29, Paris", "Ari, 29 minutes, San Francisco", "Ari, 29, 30, San Francisco",
+      "Ari, 29, San Francisco; I live in New York"]) {
+      const phone = newPhone();
+      expect(await text(s, clock, phone, "friends.help")).toBe("join_asked");
+      expect(await text(s, clock, phone, answer)).toBe("join_asked");
+      expect(await s.accounts.personFor(phone)).toBeUndefined();
+    }
+  }, T);
+
   test("a text join refused under age cannot retry with an older age (new phone, no person)", async () => {
     await applySchema(URL_, { reset: true, lockTimeout: "5s" });
     const clock = new SimClock(START);
