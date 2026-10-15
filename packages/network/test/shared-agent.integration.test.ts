@@ -275,10 +275,12 @@ test("isolated route authority fences cross-realm writes and only drains exact d
   const [stored] = await sql`select network_authority,request_hash from platform.inbound where id='msg:blooio:isolated-help'`;
   expect(stored.network_authority).toEqual(authority);
   expect(stored.request_hash).toBe(new Bun.CryptoHasher("sha256").update(JSON.stringify(input)).digest("hex"));
+  // Use a distinct fixture name: the separate sharedContext duplicate-first-name
+  // defect is tracked explicitly and must not obscure route-authority assertions.
   const phone = "+12125550993";
   let step = 0;
   const qa = (text:string) => ({...turn(`isolated-open-${++step}`,phone,text,"friends"),networkAuthority:authority});
-  for (const [index,text] of ["friends.help","Noa, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()) {
+  for (const [index,text] of ["friends.help","Inez, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()) {
     // Match the proven normal onboarding sequence: later answers arrive after the prior ask.
     if (index >= 2) clock.advance(MINUTE);
     const response=await post(qa(text)), body=await response.json() as any;
@@ -341,7 +343,7 @@ test("isolated actions and receipts recheck the drain window after database lock
   const handled = await (await post(help)).json() as any;
   let step=0;
   const qa = (text:string) => ({...turn(`locked-open-${++step}`,"+12125550995",text,"friends"),networkAuthority:authority});
-  for (const [index,text] of ["friends.help","Noa, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()) {
+  for (const [index,text] of ["friends.help","Luca, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"].entries()) {
     // Match the proven normal onboarding sequence: later answers arrive after the prior ask.
     if (index >= 2) clock.advance(MINUTE);
     const response=await post(qa(text)), body=await response.json() as any;
