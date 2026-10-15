@@ -96,7 +96,7 @@ test("updates use the canonical app inbox and replay its original receipt; uncer
     await sql.unsafe(`drop trigger fail_read_fixture on notify.inbox_items; drop function notify.fail_read_fixture()`);
   }
   expect((await post(UPDATES_PATH,action("unknown-updates-open"))).status).toBe(409);
-  expect((await sql`select last_value from notify.read_fault_attempts`)[0].last_value).toBe(1);
+  expect((await sql`select last_value::int as last_value from notify.read_fault_attempts`)[0].last_value).toBe(1);
   expect((await sql`select seen_at,seen_on from notify.inbox_items where person_id=${personId} and subject_id='read-fault'`)[0]).toEqual({seen_at:null,seen_on:null});
   expect(await sql`select * from notify.surface_signals where person_id=${personId} order by surface`).toEqual(beforeSurface);
   expect((await sql`select seen_at from notify.inbox_items where person_id=${personId} and app_id='slop' and subject_id='other-app'`)[0].seen_at).toBeNull();
