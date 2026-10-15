@@ -222,9 +222,14 @@ const JOIN_FILLER = new Set(["hi", "hey", "hello", "yo", "im", "i'm", "i", "am",
 export function parseJoinText(text: string, appWords: readonly string[], nameOk: boolean): { age?: number; name?: string; homeCity?: City; invalidHome?: boolean } {
   const t = text.normalize("NFKC").trim();
   const homes = [...t.matchAll(/(?:\b(?:my home(?: city)?(?: is| in|:)?|i live in|i am based in|i'm based in)|(?:^|[.!?;,]\s*)(?:home(?: city)?(?: is| in|:)?|based in))\s+([^.!?;,\n]+)/gi)];
-  const cities = homes.map(m => homeCityOf(m[1]));
+  let nameText = homes.reduce((text, m) => text.replace(m[0], " "), t);
+  // A reply such as "Ari, 29, San Francisco" explicitly names a home too.
+  // Remove only a known, delimited city before the conservative bare-age check.
+  const suffix = /[,;]\s*([^,;.!?\n]+)[.!?]?\s*$/.exec(nameText);
+  const suffixCity = suffix ? homeCityOf(suffix[1]) : undefined;
+  if (suffixCity) nameText = nameText.slice(0, suffix!.index);
+  const cities = [...homes.map(m => homeCityOf(m[1])), ...(suffixCity ? [suffixCity] : [])];
   const invalidHome = cities.some(c => !c) || new Set(cities).size > 1;
-  const nameText = homes.reduce((text, m) => text.replace(m[0], " "), t);
   const stated = agesStated(nameText);
   let age = stated.explicit ?? stated.age ?? ageAnswer(nameText);
   if (age === undefined) {
