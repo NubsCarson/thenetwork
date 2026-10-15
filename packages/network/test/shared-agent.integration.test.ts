@@ -334,6 +334,7 @@ test("isolated actions and receipts recheck the drain window after database lock
   for (const text of ["friends.help","Noa, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"]) expect((await post(qa(text))).status).toBe(200);
   const open=qa("Tell me about the weather"), opened=await (await post(open)).json() as any;
   expect(opened.outcome).toBe("open");
+  const[memberBefore]=await sql`select participation_state,participation_window from network.members where app_id='friends'and id=${opened.memberId}`;
   const locker=new SQL({url,max:1}); let release!:()=>void, locked!:()=>void;
   const released=new Promise<void>(resolve=>{release=resolve;}), acquired=new Promise<void>(resolve=>{locked=resolve;});
   const transaction=locker.begin(async tx=>{
@@ -358,8 +359,8 @@ test("isolated actions and receipts recheck the drain window after database lock
     expect((await pendingAction).status).toBe(403);
     const rows=await sql`select id,receipt_hash,action_receipts from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`})`;
     expect(rows.every(r=>r.receipt_hash===null&&Object.keys(r.action_receipts).length===0)).toBe(true);
-    const[m]=await sql`select participation_state from network.members where app_id='friends'and id=${opened.memberId}`;
-    expect(m.participation_state).not.toBe("quiet");
+    const[memberAfter]=await sql`select participation_state,participation_window from network.members where app_id='friends'and id=${opened.memberId}`;
+    expect(memberAfter).toEqual(memberBefore);
     // Expired exact replays remain denied; an accepted receipt is not an extension of the window.
     expect((await receipt(ack)).status).toBe(403);
   } finally {release();await transaction;await locker.close();server.stop(true);await service.close();await start();}
