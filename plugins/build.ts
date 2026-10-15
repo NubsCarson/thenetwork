@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_BACKEND_ORIGIN, DEFAULT_TEXT_LINE } from "../sites/skills.config.ts";
+import { RESPONSE_STYLE } from "../sites/skill-responses.ts";
 
 const ROOT = import.meta.dir;
 const SOURCE = join(ROOT, "..", "sites", "skills");
@@ -27,7 +28,7 @@ export const PLUGINS = {
 } as const;
 
 const fill = (text: string, mcpUrl: string) =>
-  text.replaceAll("{{BACKEND_ORIGIN}}", DEFAULT_BACKEND_ORIGIN).replaceAll("{{MCP_URL}}", mcpUrl).replaceAll("{{TEXT_LINE}}", DEFAULT_TEXT_LINE);
+  text.replaceAll("{{RESPONSE_STYLE}}", RESPONSE_STYLE.trim()).replaceAll("{{BACKEND_ORIGIN}}", DEFAULT_BACKEND_ORIGIN).replaceAll("{{MCP_URL}}", mcpUrl).replaceAll("{{TEXT_LINE}}", DEFAULT_TEXT_LINE);
 
 /** Remove slop.date from a skill for the OpenAI plugin: inline mentions, then whole table rows and list items. */
 export function withoutSlop(md: string): string {

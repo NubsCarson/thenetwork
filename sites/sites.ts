@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { mcpUrlFor, skillsConfig } from "./skills.config.ts";
+import { RESPONSE_STYLE } from "./skill-responses.ts";
 import { agentRow, promptFor } from "./agents.ts";
 import { RUN_WORKER_FIRST } from "../deploy/router.ts";
 import { stagingSiteOrigins } from "../packages/platform/src/apps.ts";
@@ -79,7 +80,8 @@ export function walk(dir: string): string[] {
 export function skillText(name: string, env: Record<string, string | undefined> = process.env): string {
   const s = SITES.find((x) => x.skill === name);
   if (!s) throw new Error(`no site for skill ${name}`);
-  return fill(readFileSync(join(SKILLS_DIR, name, "SKILL.md"), "utf8"), env, s.domain);
+  const source = readFileSync(join(SKILLS_DIR, name, "SKILL.md"), "utf8").replaceAll("{{RESPONSE_STYLE}}", RESPONSE_STYLE.trim());
+  return fill(source, env, s.domain);
 }
 
 /** The frontmatter description of a SKILL.md (one line, no YAML block scalars in our files). */
