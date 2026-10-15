@@ -372,8 +372,9 @@ test("isolated actions and receipts recheck the drain window after database lock
     }
     expect(waiters).toBeGreaterThanOrEqual(2);
     clock.advance(policy.drainUntil-clock.now()); release(); await transaction;
-    expect((await pendingReceipt).status).toBe(403);
-    expect((await pendingAction).status).toBe(403);
+    const [receiptResponse, actionResponse] = await Promise.all([pendingReceipt, pendingAction]);
+    expect(receiptResponse.status).toBe(403);
+    expect(actionResponse.status).toBe(403);
     const rows=await sql`select id,receipt_hash,action_receipts from platform.inbound where id in ('msg:blooio:locked-help',${`msg:blooio:${open.messageId}`})`;
     expect(rows).toHaveLength(2);
     for (const row of rows) {
