@@ -105,6 +105,16 @@ create table if not exists oauth.rate_limits (
   count integer not null
 );
 
+-- App/verified-phone bound draft; no bearer handoff URL. Grant deletion erases it.
+create table if not exists oauth.signup_drafts (
+  grant_id text primary key references oauth.grants(id) on delete cascade,
+  app_id text not null check (app_id in ('ntwrk','friends')),
+  phone_key text not null,
+  fields jsonb not null,
+  expires_at timestamptz not null,
+  consumed_at timestamptz
+);
+
 -- Least privilege (audit: oauth grants hold phone numbers next to app ids). No role but the service
 -- login may read this schema: never the console, analyst or per-app read roles.
 revoke all on schema oauth from public;

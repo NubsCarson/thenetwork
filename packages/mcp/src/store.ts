@@ -93,7 +93,16 @@ export type AuditKind =
 /** One audit row. Never a token, a code, a secret or a phone number. */
 export interface AuditRow { at: number; kind: AuditKind; clientId: string | null; grantId: string | null; app: McpAppId | null; detail: string | null }
 
+/** Approved editable Join fields only. No phone, age, consent or dating preferences. */
+export interface SignupDraftFields { firstName: string; homeCity?: "nyc" | "sf" }
+export interface SignupDraft { grantId: string; app: McpAppId; phoneKey: string; fields: SignupDraftFields; expiresAt: number; consumedAt: number | null }
+
 export interface OAuthStore {
+  /** One draft per grant; no overwrite/replay. Grant liveness and scope checked atomically. */
+  putSignupDraft(d: SignupDraft, at: number): Promise<boolean>;
+  /** Claim once for the verified browser phone and app, with the grant still live. */
+  claimSignupDraft(phoneKey: string, app: McpAppId, personId: string | null, at: number): Promise<SignupDraftFields | undefined>;
+
   putClient(c: OAuthClient): Promise<void>;
   getClient(id: string): Promise<OAuthClient | undefined>;
 
@@ -145,6 +154,7 @@ export const CLIENT_UNUSED_MS = 86_400_000;
 const copy = <T extends object>(v: T | undefined): T | undefined => (v ? structuredClone(v) : undefined);
 
 export class MemoryOAuthStore implements OAuthStore {
+  readonly signupDrafts = new Map<string, SignupDraft>();
   readonly clients = new Map<string, OAuthClient>();
   readonly requests = new Map<string, AuthRequest>();
   readonly grants = new Map<string, Grant>();
@@ -152,6 +162,20 @@ export class MemoryOAuthStore implements OAuthStore {
   readonly tokens = new Map<string, Token>();
   readonly rows: AuditRow[] = [];
   readonly windows = new Map<string, { start: number; count: number; windowMs: number }>();
+
+  async putSignupDraft(d: SignupDraft, at: number) {
+    const g = this.grants.get(d.grantId);
+    if (!g || g.revokedAt !== null || g.expiresAt <= at || !g.scopes.includes("profile:write") || g.app !== d.app || g.phoneKey !== d.phoneKey || this.signupDrafts.has(g.id)) return false;
+    this.signupDrafts.set(g.id, structuredClone(d)); return true;
+  }
+  async claimSignupDraft(phoneKey: string, app: McpAppId, personId: string | null, at: number) {
+    const drafts = [...this.signupDrafts.values()].filter(d => d.phoneKey === phoneKey && d.app === app && d.consumedAt === null && d.expiresAt > at);
+    // Ambiguous assistant drafts need a fresh explicit handoff, never silently choose one.
+    if (drafts.length !== 1) return undefined;
+    const d = drafts[0], g = this.grants.get(d.grantId);
+    if (!g || g.revokedAt !== null || g.expiresAt <= at || g.personId !== personId || !g.scopes.includes("profile:write")) return undefined;
+    const fields = structuredClone(d.fields); d.fields = { firstName: "" }; d.consumedAt = at; return fields;
+  }
 
   async putClient(c: OAuthClient) { this.clients.set(c.id, structuredClone(c)); }
   async getClient(id: string) { return copy(this.clients.get(id)); }
@@ -174,6 +198,7 @@ export class MemoryOAuthStore implements OAuthStore {
     for (const t of this.tokens.values()) if (t.grantId === id && t.revokedAt === null) t.revokedAt = at;
     if (!g || g.revokedAt !== null) return false;
     g.revokedAt = at;
+    const draft = this.signupDrafts.get(id); if (draft) draft.fields = { firstName: "" };
     return true;
   }
 
@@ -210,6 +235,7 @@ export class MemoryOAuthStore implements OAuthStore {
   }
 
   async sweep(at: number) {
+    for (const d of this.signupDrafts.values()) if (d.expiresAt <= at) d.fields = { firstName: "" };
     for (const [k, r] of this.requests) if (r.expiresAt <= at) this.requests.delete(k);
     for (const [k, c] of this.codes) if (c.expiresAt <= at) this.codes.delete(k);
     for (const [k, t] of this.tokens) if (t.expiresAt <= at) this.tokens.delete(k);
@@ -228,6 +254,7 @@ export class MemoryOAuthStore implements OAuthStore {
 
   private dropGrant(id: string) {
     this.grants.delete(id);
+    this.signupDrafts.delete(id);
     for (const [k, c] of this.codes) if (c.grantId === id) this.codes.delete(k);
     for (const [k, t] of this.tokens) if (t.grantId === id) this.tokens.delete(k);
   }

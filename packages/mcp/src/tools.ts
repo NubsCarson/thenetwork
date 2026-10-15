@@ -1,15 +1,15 @@
 // The tools. app_info and start_signup need no sign-in and return public facts only.
 // check_status and get_updates need membership:read and return only the signed-in person's own state
-// or updates in the one app the client is bound to. No tool takes a phone number, a code, a name or an age, and every
-// input schema refuses properties it does not list.
+// or updates in the one app the client is bound to. No tool takes a phone number, a code or an age, and every
+// input schema refuses properties it does not list. prepare_signup alone takes approved Join name/home city.
 import { appsOn, type McpApp, type McpAppId, type Surface } from "./apps.ts";
 import type { AssistantKind, PlatformHooks, PublicStatus } from "./hooks.ts";
-import type { Grant, Scope } from "./store.ts";
+import type { Grant, Scope, OAuthStore, SignupDraftFields } from "./store.ts";
 import { outputLeaks } from "./leaks.ts";
 
-export const TOOL_NAMES = ["app_info", "start_signup", "check_status", "submit_profile", "get_updates"] as const;
+export const TOOL_NAMES = ["app_info", "start_signup", "check_status", "submit_profile", "get_updates", "prepare_signup"] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
-export const TOOL_SCOPE: Record<ToolName, Scope | null> = { app_info: null, start_signup: null, check_status: "membership:read", submit_profile: "profile:write", get_updates: "membership:read" };
+export const TOOL_SCOPE: Record<ToolName, Scope | null> = { app_info: null, start_signup: null, check_status: "membership:read", submit_profile: "profile:write", get_updates: "membership:read", prepare_signup: "profile:write" };
 /** An update reference from a Network text (packages/notify task tokens): a pointer, never a credential. */
 export const UPDATE_TOKEN = /^T-[2-9A-HJKMNP-TV-Z]{6}$/;
 /** The longest profile text the assistant may submit (a few short paragraphs). */
@@ -47,6 +47,14 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
       securitySchemes: noauth,
       _meta: { securitySchemes: noauth },
     },
+    ...(host.id === "friends" || host.id === "ntwrk" ? [{
+      name: "prepare_signup", title: "Prepare my Join form",
+      description: "After verified phone sign-in and OAuth approval, save only the first name and optional home city the person explicitly approved for this app. They must open Join, review or edit every field and consent themselves. Never creates a person, membership or text consent. One draft per grant; no age, phone, code, gender or dating preferences.",
+      inputSchema: { type: "object", properties: { app: { type: "string", enum: [host.id] }, firstName: { type: "string", minLength: 1, maxLength: 50 }, homeCity: { type: "string", enum: ["nyc", "sf"] } }, required: ["firstName"], additionalProperties: false },
+      annotations: { title: "Prepare my Join form", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      securitySchemes: [{ type: "oauth2", scopes: ["profile:write"] }],
+      _meta: { securitySchemes: [{ type: "oauth2", scopes: ["profile:write"] }] },
+    }] : []),
     {
       name: "check_status",
       title: `My ${host.name} status`,
@@ -124,13 +132,19 @@ export function contactOrCode(text: string): boolean {
   return false;
 }
 
-export function checkArgs(name: ToolName, args: unknown, enumIds: string[], host: McpApp): { ok: true; app?: string; about?: string; token?: string } | { ok: false; message: string } {
+export function checkArgs(name: ToolName, args: unknown, enumIds: string[], host: McpApp): { ok: true; app?: string; about?: string; token?: string; draft?: SignupDraftFields } | { ok: false; message: string } {
   if (args === undefined || args === null) args = {};
   if (typeof args !== "object" || Array.isArray(args)) return { ok: false, message: "Arguments must be an object." };
   const a = args as Record<string, unknown>;
-  const extra = Object.keys(a).filter(k => k !== "app" && !(name === "submit_profile" && k === "about") && !(name === "get_updates" && k === "update_token"));
-  // Refuse, never ignore: a phone, a code, a name or an age is never accepted by any tool.
+  const extra = Object.keys(a).filter(k => k !== "app" && !(name === "submit_profile" && k === "about") && !(name === "get_updates" && k === "update_token") && !(name === "prepare_signup" && ["firstName", "homeCity"].includes(k)));
+  // Refuse unlisted fields. Only prepare_signup takes an approved first name and home city.
   if (extra.length) return { ok: false, message: `This tool does not take ${extra.map(k => `"${k.slice(0, 40)}"`).join(", ")}. It never takes phone numbers, codes or personal details.` };
+  if (name === "prepare_signup") {
+    if (!["friends", "ntwrk"].includes(host.id) || (a.app !== undefined && a.app !== host.id)) return { ok: false, message: "This draft is not available for that app." };
+    const firstName = typeof a.firstName === "string" ? a.firstName.trim() : "";
+    if (!firstName || firstName.length > 50 || !/^[\p{L}][\p{L}\p{M}'’-]{0,49}$/u.test(firstName) || contactOrCode(firstName) || (a.homeCity !== undefined && a.homeCity !== "nyc" && a.homeCity !== "sf")) return { ok: false, message: "Use only the approved first name and a supported home city." };
+    return { ok: true, app: host.id, draft: { firstName, ...(a.homeCity ? { homeCity: a.homeCity as "nyc" | "sf" } : {}) } };
+  }
   if (name === "submit_profile") {
     const about = typeof a.about === "string" ? a.about.trim() : "";
     if (about.length < 10 || about.length > PROFILE_MAX_CHARS) return { ok: false, message: `about must be 10 to ${PROFILE_MAX_CHARS} characters.` };
@@ -197,6 +211,8 @@ export interface CallContext {
   host: McpApp;
   hooks: PlatformHooks;
   grant: Grant | null;
+  store?: OAuthStore;
+  now?: number;
   /** Which assistant the OAuth client is (by its redirect hosts): chatgpt, claude, grok, or web. */
   assistant?: AssistantKind;
 }
@@ -233,6 +249,18 @@ export async function callTool(name: ToolName, args: unknown, c: CallContext): P
           ages: { join: a.ages.join, matching: a.ages.match },
         },
       };
+    }
+    case "prepare_signup": {
+      const g = c.grant;
+      if (!g || !c.store) return { kind: "invalid_grant" };
+      const person = await c.hooks.personForKey(g.phoneKey);
+      if (!grantStillTheirs(g.personId, person)) return { kind: "invalid_grant" };
+      const status = person === null ? "not_joined" : await c.hooks.status(person, g.app);
+      if (status !== "not_joined" && status !== "invited") return { kind: "error", message: "Use your existing profile; this form is for joining." };
+      const at = c.now ?? Date.now();
+      const saved = await c.store.putSignupDraft({ grantId: g.id, app: g.app, phoneKey: g.phoneKey, fields: chk.draft!, expiresAt: Math.min(at + 10 * 60_000, g.expiresAt), consumedAt: null }, at);
+      return saved ? { kind: "ok", data: { prepared: true, app: g.app, url: `${c.apps[g.app].links.join}?via=agent`, next_step: "Open Join to review or edit your name and home city. Your age and text consent are still yours to enter." } }
+        : { kind: "error", message: "This connection already prepared a draft or is no longer valid. Open Join to enter or edit your details." };
     }
     case "check_status": {
       const g = c.grant;

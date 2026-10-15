@@ -42,6 +42,32 @@ describe.skipIf(!EXPLICIT_PG && !pgAvailable)("PgOAuthStore", () => {
     await admin(`drop database if exists ${DB} with (force)`).catch(() => {});
   });
 
+  test("authenticated pre-Join draft persists, claims once under a race and rejects wrong app/phone and revoked grants", async () => {
+    const env = setup({ store });
+    const c = await connect(env, "friends.help", PHONE_A);
+    const prepared = await call(env, "https://friends.help/mcp", "prepare_signup", { firstName: "Ari", homeCity: "sf" }, { token: c.token.access_token });
+    expect(prepared.body!.result.structuredContent.prepared).toBe(true);
+    expect(await env.accounts.personFor(PHONE_A)).toBeUndefined();
+    const restarted = new PgOAuthStore(testUrl.toString());
+    try {
+      expect(await restarted.claimSignupDraft(env.accounts.phoneHash("+12125550199"), "friends", null, env.clock.t)).toBeUndefined();
+      expect(await restarted.claimSignupDraft(env.accounts.phoneHash(PHONE_A), "ntwrk", null, env.clock.t)).toBeUndefined();
+      const pair = await Promise.all([store, restarted].map(s => s.claimSignupDraft(env.accounts.phoneHash(PHONE_A), "friends", null, env.clock.t)));
+      expect(pair.filter(Boolean)).toEqual([{ firstName: "Ari", homeCity: "sf" }]);
+      const grants = await store.grantsFor(env.accounts.phoneHash(PHONE_A), "friends", env.clock.t);
+      expect(await store.putSignupDraft({ grantId: grants[0].id, app: "friends", phoneKey: grants[0].phoneKey, fields: { firstName: "Replay" }, expiresAt: env.clock.t + 60_000, consumedAt: null }, env.clock.t)).toBe(false);
+      const rows = await store.sql`select fields,consumed_at from oauth.signup_drafts where grant_id=${grants[0].id}`;
+      expect(rows[0].fields).toEqual({}); expect(rows[0].consumed_at).not.toBeNull();
+      const next = await connect(env, "friends.help", PHONE_A);
+      await call(env, "https://friends.help/mcp", "prepare_signup", { firstName: "Rae" }, { token: next.token.access_token });
+      const all = await store.grantsFor(env.accounts.phoneHash(PHONE_A), "friends", env.clock.t);
+      const pending = all.find((g: import("../src/store.ts").Grant) => g.clientId === next.client.client_id)!;
+      await store.revokeGrant(pending.id, env.clock.t);
+      expect(await restarted.claimSignupDraft(env.accounts.phoneHash(PHONE_A), "friends", null, env.clock.t)).toBeUndefined();
+      expect((await store.sql`select fields from oauth.signup_drafts where grant_id=${pending.id}`)[0].fields).toEqual({});
+    } finally { await restarted.close(); }
+  });
+
   test("full flow, refresh rotation and replay, with hashes only at rest", async () => {
     const env = setup({ store });
     await addMember(env, PHONE_A, [{ app: "peon", state: "active" }]);

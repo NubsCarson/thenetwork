@@ -118,3 +118,7 @@ hand, deploys need founder approval and go through `scripts/wrangler.sh` with `N
 All four projects are in the ntwrk.party Cloudflare account (its id is `CLOUDFLARE_ACCOUNT_ID`, from
 the environment or the CI variable). Each answers on `<project>.pages.dev`, which the backend accepts as that app's host; slop.date
 and friends.help DNS (another account) point there. Details: [docs/deploy.md](../docs/deploy.md).
+
+### Authenticated Join drafts
+
+Network and Friends may claim an approved assistant draft after normal phone sign-in through a same-origin `POST /oauth/signup-draft` (the existing signed OAuth router). Only first name and home city fill existing editable controls. The draft is optional and single-use; missing, expired or revoked drafts leave the ordinary form usable. Human edits win over delayed responses. Age and the app text-consent checkbox remain for the person. No personal fields or credentials are carried in a URL. Slop and Peon do not use this path.

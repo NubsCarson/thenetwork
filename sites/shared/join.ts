@@ -40,6 +40,30 @@ function route(root: HTMLElement, me: Me, inviteOnly: boolean): void {
 }
 
 export async function mountJoin(root: HTMLElement): Promise<void> {
+  const profile = $(root, 'form[data-form="profile"]') as HTMLFormElement | null;
+  // Block native GET submission even while the optional draft is loading.
+  profile?.addEventListener("submit", event => event.preventDefault());
+  const edited = new Set<string>();
+  profile?.addEventListener("input", ev => { const input = ev.target as HTMLInputElement; if (input.name) edited.add(input.name); });
+  profile?.addEventListener("change", ev => { const input = ev.target as HTMLInputElement; if (input.name) edited.add(input.name); });
+  let claimed = false;
+  const prefill = async (me: Me) => {
+    if (!me.canJoin || !["friends", "ntwrk"].includes(me.app) || claimed || !profile) return;
+    claimed = true;
+    try {
+      const response = await fetch("/oauth/signup-draft", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
+      if (!response.ok) return;
+      const { draft } = await response.json();
+      if (!draft || typeof draft.firstName !== "string" || draft.firstName.length > 50) return;
+      for (const name of ["firstName", "homeCity"] as const) {
+        const input = profile.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null;
+        const value = draft[name];
+        if (!input || input.value || edited.has(name) || typeof value !== "string") continue;
+        if (name === "homeCity" && value !== "sf" && value !== "nyc") continue;
+        input.value = value;
+      }
+    } catch { /* Optional draft unavailable: the ordinary editable form remains usable. */ }
+  };
   showStep(root, "loading");
   const [app, me] = await Promise.all([api.app(), api.me()]);
   const inviteOnly = app.ok ? app.data.joinMode === "invite" : root.dataset.joinMode === "invite";
@@ -48,6 +72,7 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
 
   if (me.ok) {
     route(root, me.data, inviteOnly);
+    void prefill(me.data);
   } else if (inviteOnly) {
     showStep(root, "invite");
   } else {
@@ -60,7 +85,7 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
   mountAuth(root, async () => {
     flowError(root, "");
     const again = await api.me();
-    if (again.ok) route(root, again.data, inviteOnly);
+    if (again.ok) { route(root, again.data, inviteOnly); void prefill(again.data); }
     else {
       start(root);
       flowError(root, message(root, again.error));
