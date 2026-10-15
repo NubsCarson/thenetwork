@@ -306,7 +306,7 @@ test("isolated route authority fences cross-realm writes and only drains exact d
 
 
 test("route policy boot validation rejects malformed or non-staging authority", () => {
-  const authority = {version:1,routeId:"owned-route",generation:"generation-1",audience:"network-owned-qa",realmId:"owned-qa"};
+  const authority = {version:1 as const,routeId:"owned-route",generation:"generation-1",audience:"network-owned-qa",realmId:"owned-qa"};
   const value = {authority,admitUntil:1000,drainUntil:2000};
   const env = {PLATFORM_ENV:"staging",NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(value)};
   const valid = networkRoutePolicy(env);
