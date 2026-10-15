@@ -5,6 +5,7 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createPublicApi} from "../../packages/platform/src/api.ts";
+import {signupAccountView} from "../../packages/platform/src/sessions.ts";
 import {call,connect,PHONE_A,setup} from "../../packages/mcp/test/harness.ts";
 import {buildSite,site} from "../../sites/sites.ts";
 const browserTest=process.env.PLAYWRIGHT_MODULE?test:test.skip;
@@ -88,6 +89,42 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
     expect(await page.locator('[name="firstName"]').inputValue()).toBe("Luca");
     expect(await page.locator('[name="age"]').inputValue()).toBe("");expect(await page.locator('[name="consent"]').isChecked()).toBe(false);
     expect(await e.accounts.personFor(nextPhone)).toBeUndefined();
+
+    // A fully settled A form must not submit A's age, fields or checkbox under another tab's B session.
+    await page.reload();await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Luca");
+    await page.locator('[name="age"]').fill("12");await page.locator('[name="consent"]').check();
+    const switchedPhone="+12125550148",switched=await connect(e,"friends.help",switchedPhone);
+    expect((await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Mina",homeCity:"nyc"},{token:switched.token.access_token})).body!.result.structuredContent.prepared).toBe(true);
+    const switchedSession=await e.sessions.create("friends",switchedPhone,null),sentBeforeSwitch=e.provider.sent.length;
+    await context.addCookies([{name:"sid_friends",value:switchedSession.token,url:server.url.origin}]);
+    const rejected=page.waitForResponse((r:any)=>r.url().endsWith("/api/join"));
+    await page.locator('form[data-form="profile"] button[type="submit"]').click();
+    const mismatch=await rejected;expect(mismatch.status()).toBe(409);
+    expect(mismatch.request().postDataJSON().signupView).toBe(signupAccountView("friends",e.accounts.phoneHash(nextPhone)));
+    expect(await mismatch.json()).toMatchObject({ok:false,error:"account_changed"});
+    expect(await e.people.ageFloor(e.accounts.phoneHash(switchedPhone))).toBeUndefined();
+    expect(await e.accounts.personFor(switchedPhone)).toBeUndefined();
+    expect(await e.people.consentEvents(switchedPhone,"friends")).toHaveLength(0);
+    await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Mina");
+    expect(await page.locator('[data-step="profile"]').isVisible()).toBe(true);
+    expect(await page.locator('[data-step="done"]').isVisible()).toBe(false);
+    expect(await page.locator('[name="homeCity"]').inputValue()).toBe("nyc");
+    expect(await page.locator('[name="age"]').inputValue()).toBe("");expect(await page.locator('[name="consent"]').isChecked()).toBe(false);
+    expect(await page.locator('[data-flow-error]').isVisible()).toBe(true);
+    expect((await page.locator('[data-flow-error]').textContent())?.trim().length).toBeGreaterThan(0);
+    expect(e.provider.sent.length).toBe(sentBeforeSwitch);
+    // B now reviews/corrects the new form and explicitly supplies B's own age and consent.
+    await page.locator('[name="firstName"]').fill("Rae");await page.locator('[name="homeCity"]').selectOption("sf");
+    await page.locator('[name="age"]').fill("29");await page.locator('[name="consent"]').check();
+    const accepted=page.waitForResponse((r:any)=>r.url().endsWith("/api/join"));
+    await page.locator('form[data-form="profile"] button[type="submit"]').click();const joined=await accepted;expect(joined.status()).toBe(200);
+    expect(joined.request().postDataJSON().signupView).toBe(signupAccountView("friends",e.accounts.phoneHash(switchedPhone)));
+    await page.locator('[data-step="done"]').waitFor({state:"visible"});
+    const switchedPerson=await e.accounts.personFor(switchedPhone),switchedMember=await e.people.getMembership(switchedPerson!.id,"friends");
+    expect(switchedMember!.firstName).toBe("Rae");expect(switchedMember!.profile.homeCity).toBe("sf");
+    expect(await e.people.ageFloor(e.accounts.phoneHash(switchedPhone))).toBe(29);
+    expect(await e.people.consentEvents(switchedPhone,"friends")).toHaveLength(1);
+    expect(await e.accounts.personFor(nextPhone)).toBeUndefined();expect(e.provider.sent.length).toBe(sentBeforeSwitch);
 
   }finally{release();await context.close();await browser.close();server.stop(true);rmSync(out,{recursive:true,force:true});}
 });
