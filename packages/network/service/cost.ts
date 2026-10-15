@@ -19,12 +19,8 @@
 // The relay classifier rows use kind "other": migration 0020 allows only the kinds below in its check
 // constraint, and a dedicated `workers_ai_call` kind needs a new migration (the observatory owns them).
 //
-// LLM calls: the service has no production LLM client today. It never builds defaultLLM() or
-// llmUnderstand (the ConsentNetwork's `understand` is unset, so member texts are read by the offline
-// rules), and slop onboarding uses the engine's rule reader `extractSlopProfile` (no LLM reader). The
-// member conversation runs in Eliza, upstream. A service-side client added later must pass
-// `ledger.llmHooks(app, purpose)` with the real app and purpose (for example "understand",
-// "slop_onboarding"); packages/network/test/cost.integration.test.ts checks the row it writes.
+// NETWORK_ENGINE_JUDGE=1 creates a per-app recommenderLLM with llmHooks(app, "engine_judge").
+// The member conversation remains in Eliza; the service-side onboarding reader stays rules-only.
 import { randomUUID } from "node:crypto";
 import type { SQL } from "bun";
 import type { Clock } from "@thenetwork/core";

@@ -187,6 +187,8 @@ export interface ObsFeedItem {
 export interface EngineRunSummary {
   id: string; at: number; city?: City; engineVersion: string; proposals: number; wallMs: number;
   shadow?: boolean;
+  /** Matching pass 2 counts, without private prompts or verdict text. */
+  matchingJudge?: { model?: string; calls: number; failures: number; verdicts: number; selected: number; judged: number };
   funnel: {
     generated: number; passedHardFilters: number; deduped: number; eligible: number; belowThreshold: number;
     budgetSkips: number; selected: number; exploration: number; dealbreakers: number;
