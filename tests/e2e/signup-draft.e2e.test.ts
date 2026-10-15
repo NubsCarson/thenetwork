@@ -15,6 +15,7 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
   const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"},minStartMs:0,minVerifyMs:0});
   const session=await e.sessions.create("friends",PHONE_A,null);
   const out=mkdtempSync(join(tmpdir(),"signup-draft-ui-"));expect((await buildSite(site("friends"),out,{})).ok).toBe(true);
+  const delayedDrafts:unknown[]=[];
   let release!:()=>void;let held=new Promise<void>(r=>{release=r;});let delay=false, rejectJoin=false;
   const server=Bun.serve({hostname:"127.0.0.1",port:0,async fetch(req){
     const u=new URL(req.url);
@@ -22,9 +23,13 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
       // The normal site's signed proxy selects this exact app; fixture supplies that host boundary.
       if(u.pathname==="/api/join"&&rejectJoin){rejectJoin=false;return Response.json({ok:false,error:"unauthorized"},{status:401});}
       const headers=new Headers(req.headers);headers.set("host","friends.help");if(req.method==="POST")headers.set("origin","https://friends.help");
-      if(u.pathname==="/oauth/signup-draft"&&delay)await held;
+      const delivery=u.pathname==="/oauth/signup-draft"&&delay?held:undefined;
       const proxied=new Request("https://friends.help"+u.pathname,{method:req.method,headers,...(req.method==="POST"?{body:await req.text()}:{})});
-      return u.pathname.startsWith("/oauth/")?e.fetch(proxied):(await api.fetch(proxied))!;
+      const response=u.pathname.startsWith("/oauth/")?await e.fetch(proxied):(await api.fetch(proxied))!;
+      // Delay delivery AFTER normal auth and draft generation. Delaying authentication itself
+      // would merely produce 401 once normal reauthentication revokes the old session.
+      if(delivery){delayedDrafts.push((await response.clone().json()).draft);await delivery;}
+      return response;
     }
     const file=Bun.file(join(out,u.pathname==="/join"?"join.html":u.pathname.slice(1)));return await file.exists()?new Response(file):new Response("not found",{status:404});
   }});
@@ -47,13 +52,21 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
     const phone="+12125550149",other=await connect(e,"friends.help",phone);await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Tess",homeCity:"sf"},{token:other.token.access_token});
     const s=await e.sessions.create("friends",phone,null);await context.addCookies([{name:"sid_friends",value:s.token,url:server.url.origin}]);delay=true;
     await page.goto(server.url+"join?via=agent");await page.locator('[data-step="profile"]').waitFor({state:"visible"});
-    await page.locator('[name="firstName"]').fill("Inez");await page.locator('[name="homeCity"]').selectOption("nyc");const responseDone=page.waitForResponse((r:any)=>r.url().endsWith("/oauth/signup-draft"));release();
-    await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Inez");
-    // Ensure the delayed claim actually finished before checking persisted human edits.
-    await responseDone;await page.waitForLoadState("networkidle");
+    await page.locator('[name="firstName"]').fill("Inez");await page.locator('[name="homeCity"]').selectOption("nyc");
+    const responseDone=page.waitForResponse((r:any)=>r.url().endsWith("/oauth/signup-draft"));
+    const ownerRechecked=page.waitForResponse((r:any)=>r.url().endsWith("/api/me"));release();
+    // Wait for the actual delayed payload and its ownership recheck, not unrelated background fetches.
+    expect((await(await responseDone).json()).draft).toEqual({firstName:"Tess",homeCity:"sf"});
+    await ownerRechecked;
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
     expect(await page.locator('[name="firstName"]').inputValue()).toBe("Inez");expect(await page.locator('[name="homeCity"]').inputValue()).toBe("nyc");expect(await e.accounts.personFor(phone)).toBeUndefined();
     // A delayed response for the old account must not cross a normal reauthentication.
-    held=new Promise<void>(r=>{release=r;});await page.reload();
+    held=new Promise<void>(r=>{release=r;});
+    const oldRequest=page.waitForRequest((r:any)=>r.url().endsWith("/oauth/signup-draft"));
+    await page.reload();
+    const staleRequest=await oldRequest;
+    let staleDelivered=false;
+    const staleResponse=page.waitForResponse((r:any)=>r.request()===staleRequest).then((r:any)=>{staleDelivered=true;return r;});
     await page.locator('[data-step="profile"]').waitFor({state:"visible"});
     await page.locator('[name="firstName"]').fill("Oldedit");await page.locator('[name="age"]').fill("29");await page.locator('[name="consent"]').check();
     rejectJoin=true;await page.locator('form[data-form="profile"] button[type="submit"]').click();
@@ -67,7 +80,11 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
     await page.locator('input[name="code"]').fill(e.provider.last(nextPhone)!);
     await page.locator('form[data-form="code"] button[type="submit"]').click();
     await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Luca");
-    release();await page.waitForLoadState("networkidle");
+    expect(staleDelivered).toBe(false);release();
+    // The old account's real response must arrive before the final new-account assertions.
+    expect((await staleResponse).status()).toBe(200);
+    expect(delayedDrafts).toEqual([{firstName:"Tess",homeCity:"sf"},{firstName:"Tess",homeCity:"sf"}]);
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
     expect(await page.locator('[name="firstName"]').inputValue()).toBe("Luca");
     expect(await page.locator('[name="age"]').inputValue()).toBe("");expect(await page.locator('[name="consent"]').isChecked()).toBe(false);
     expect(await e.accounts.personFor(nextPhone)).toBeUndefined();
