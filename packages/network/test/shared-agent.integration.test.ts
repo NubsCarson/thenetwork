@@ -19,6 +19,11 @@ const clock = new SimClock(Date.UTC(2026, 9, 9, 16));
 let sql: SQL, service: NetworkService, server: ReturnType<typeof Bun.serve>;
 let escaped = 0, code = "";
 const start = async (routePolicy?: Record<string, unknown>) => {
+  // Only this test's newly created database changes realm markers. The service's
+  // normal staging/database mismatch guard stays intact.
+  const [realm] = await sql`select current_database() as database,value from platform.settings where key='environment'`;
+  if (realm?.database !== db || !["dev","staging"].includes(realm.value)) throw new Error("Owned test realm required");
+  await sql`update platform.settings set value=${routePolicy ? "staging" : "dev"} where key='environment'`;
   service = new NetworkService({url, clock, photoStorage:null, instance:"signed-turn-integration",
     env:{PLATFORM_ENV:routePolicy ? "staging" : "dev", PLATFORM_HASH_KEY:"synthetic-route-test-hash-key", CLEF_RATINGS:"off", SERVICE_TURN_SECRET:secret, ...(routePolicy ? {NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(routePolicy)} : {})}, networks:[{id:"ntwrk:nyc",matchingEnabled:false},{id:"slop:nyc",matchingEnabled:false},{id:"friends:nyc",matchingEnabled:false}],
     network:{seed:1}, publicApi:{minStartMs:0,minVerifyMs:0,otp:{name:"fixture",send:async () => {code="314159";return {code};}}},
