@@ -656,7 +656,9 @@ export class NetworkRuntime {
       const firstName = member.name.trim().split(/\s+/)[0] ?? "";
       const forbidden = [e164, binding.person.id, ...snapshot.facets.map(f => f.id), ...snapshot.members.flatMap(m => {
         const first = m.name.trim().split(/\s+/)[0] ?? "";
-        return m.id === memberId ? [m.id] : [m.id, m.name, ...(first.toLowerCase() !== firstName.toLowerCase() ? [first] : [])];
+        // A shared first name is also the caller's own public name. Keep other full names private.
+        const otherName = m.name.trim().toLowerCase() !== firstName.toLowerCase() ? [m.name] : [];
+        return m.id === memberId ? [m.id] : [m.id, ...otherName, ...(first.toLowerCase() !== firstName.toLowerCase() ? [first] : [])];
       })];
       const facts = [...snapshot.facets.filter(f => f.scope === "agent_private").map(f => f.value),...(participation.window?.note?[participation.window.note]:[])];
       const safe = (text: string) => outputLeaks(text, {forbidden, facts, contacts: true}).length === 0;

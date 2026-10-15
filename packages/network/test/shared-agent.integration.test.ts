@@ -251,3 +251,41 @@ test("the Cloud turn secret is never also a staff bearer token", () => {
   expect(() => make({tokens:`reviewer@slop:other-staff-token-0001,admin@*:console-token-00000001`, consoleToken:secret})).toThrow(/SERVICE_TURN_SECRET must differ/);
   expect(() => make({tokens:"admin@*:console-token-00000001", consoleToken:"console-token-00000001"})).not.toThrow();
 });
+
+
+test("members sharing a first name receive their own context without another person's private details", async () => {
+  const phones = ["+12125550891", "+12125550892", "+12125550893"];
+  const memberIds: string[] = [];
+  for (const [index, phone] of phones.entries()) {
+    for (const [step, text] of ["friends.help", `${index === 2 ? "Mira" : "Noa"}, 29`, "I enjoy hiking and cooking",
+      "Saturday afternoons work for me", "Small groups are good"].entries()) {
+      clock.advance(MINUTE);
+      expect((await post(turn(`same-name-${index}-${step}`, phone, text, "friends"))).status).toBe(200);
+    }
+    const person = await service.accounts.personFor(phone);
+    expect(person).toBeDefined();
+    const [member] = await sql`select member_id from platform.memberships where person_id=${person!.id}::uuid and app_id='friends'`;
+    memberIds.push(member.member_id);
+  }
+  // Controlled stored-data fixtures challenge the actual model-visible projection, not a mock filter.
+  await sql`update network.members set name='Noa Riverstone' where app_id='friends' and id=${memberIds[2]}`;
+  await sql`insert into network.facets(app_id,id,member_id,kind,value,privacy_scope,provenance,status)
+    values('friends','same-name-private',${memberIds[1]},'fact','PRIVATE_SAME_NAME_CANARY','agent_private','said','confirmed')`;
+  for (const [index, memberId] of memberIds.slice(0, 2).entries()) {
+    const values = ["Enjoys board games", "Noa Riverstone", memberIds[2]!, "PRIVATE_SAME_NAME_CANARY"];
+    for (const [item, value] of values.entries()) await sql`insert into network.facets(app_id,id,member_id,kind,value,privacy_scope,provenance,status)
+      values('friends',${`same-name-${index}-facet-${item}`},${memberId},'fact',${value},'shareable','said','confirmed')`;
+  }
+  const before = escaped;
+  for (const [index, phone] of phones.slice(0, 2).entries()) {
+    const response = await post(turn(`same-name-open-${index}`, phone, "Tell me about the weather", "friends"));
+    expect(response.status).toBe(200);
+    const body = await response.json() as any;
+    expect(body.outcome).toBe("open");
+    expect(body.context.firstName).toBe("Noa");
+    expect(body.context.facets).toContain("Enjoys board games");
+    const visible = JSON.stringify(body.context);
+    for (const forbidden of ["Noa Riverstone", "PRIVATE_SAME_NAME_CANARY", ...memberIds, ...phones]) expect(visible).not.toContain(forbidden);
+  }
+  expect(escaped).toBe(before);
+}, 60_000);
