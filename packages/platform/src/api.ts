@@ -477,6 +477,10 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
 
       case "POST /api/join":
         return withSession(async who => {
+          // Updated forms bind the reviewed fields to the displayed account. Check before
+          // recording age, creating a person or accepting consent; another tab may change cookies.
+          if (b.signupView !== undefined && b.signupView !== signupAccountView(appId, accounts.phoneHash(who.e164)))
+            return json(409, { ok: false, error: "account_changed" });
           const input = parseJoin(b);
           if (!input) return json(400, { ok: false, error: "invalid" });
           try {

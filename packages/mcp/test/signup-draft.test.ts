@@ -10,6 +10,28 @@ const browser = async (e: ReturnType<typeof setup>, phone: string) => {
   const s=await e.sessions.create("friends",phone,null);return `sid_friends=${s.token}`;
 };
 
+test("settled draft cannot Join a different signed-in account or record its age and consent", async () => {
+  const e=setup(), c=await connect(e,"friends.help",PHONE_A);
+  await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token:c.token.access_token});
+  const cookieA=await browser(e,PHONE_A),shown=await(await claim(e,cookieA)).json()as any;
+  const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"},minStartMs:0,minVerifyMs:0});
+  const cookieB=await browser(e,PHONE_B);
+  const submit=(signupView:unknown,age:number)=>api.fetch(new Request("https://friends.help/api/join",{method:"POST",headers:{host:"friends.help",origin:"https://friends.help",cookie:cookieB,"content-type":"application/json"},body:JSON.stringify({...shown.draft,signupView,age,consent:{sms:true,wording:APPS.friends.consent.text}})}));
+  for(const stale of [shown.signupView,null,7]){
+    const denied=(await submit(stale,12))!;
+    expect(denied.status).toBe(409);expect(await denied.json()).toMatchObject({error:"account_changed"});
+    expect(await e.people.ageFloor(e.accounts.phoneHash(PHONE_B))).toBeUndefined();
+    expect(await e.accounts.personFor(PHONE_B)).toBeUndefined();
+    expect(await e.people.consentEvents(PHONE_B,"friends")).toHaveLength(0);
+  }
+  expect(await e.accounts.personFor(PHONE_A)).toBeUndefined();
+  const me=await(await api.fetch(new Request("https://friends.help/api/me",{headers:{host:"friends.help",cookie:cookieB}})))!.json()as any;
+  expect((await submit(me.signupView,29))!.status).toBe(200);
+  const person=await e.accounts.personFor(PHONE_B);
+  expect((await e.people.getMembership(person!.id,"friends"))!.firstName).toBe("Ari");
+  expect(await e.people.consentEvents(PHONE_B,"friends")).toHaveLength(1);
+});
+
 test("verified-phone OAuth draft is app-bound, recoverable until deliberate use, editable before normal Join and never opts in", async () => {
   const e=setup(), c=await connect(e,"friends.help",PHONE_A), token=c.token.access_token;
   const saved=await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token});

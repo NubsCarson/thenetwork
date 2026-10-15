@@ -140,6 +140,7 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
     setError(form, "");
     const interests = f.getAll("interests").map(String).filter(Boolean);
     const body = {
+      ...(account ? { signupView: account } : {}),
       firstName,
       age,
       ...(str("homeCity") ? { homeCity: str("homeCity") as "nyc" | "sf" } : {}),
@@ -165,6 +166,13 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
         done.append(next);
       }
       showStep(root, "done");
+    } else if (res.error === "account_changed") {
+      resetAccount();
+      const changedGeneration = generation, current = await api.me();
+      if (changedGeneration !== generation) return;
+      if (current.ok) { route(root, current.data, inviteOnly); void prefill(current.data); }
+      else start(root);
+      flowError(root, message(root, "account_changed"));
     } else if (res.error === "under_age" || res.error === "invite_only" || res.error === "review") {
       block(root, res.error);
     } else if (res.error === "unauthorized") {
