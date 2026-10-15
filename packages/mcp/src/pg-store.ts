@@ -63,7 +63,9 @@ export class PgOAuthStore implements OAuthStore {
     try { return await this.sql.begin(async tx => {
       // Lock grants in the same order as revocation before taking draft rows.
       const grants = await tx`select g.id from oauth.grants g join oauth.signup_drafts d on d.grant_id=g.id
-        where d.phone_key=${phoneKey} and d.app_id=${app} and d.consumed_at is null and d.expires_at>${new Date(at)} order by g.id for update of g`;
+        where d.phone_key=${phoneKey} and d.app_id=${app} and d.consumed_at is null and d.expires_at>${new Date(at)}
+        and g.app_id=${app} and g.phone_key=${phoneKey} and g.person_id is not distinct from ${personId}
+        and g.revoked_at is null and g.expires_at>${new Date(at)} and 'profile:write'=any(g.scopes) order by g.id for update of g`;
       if (grants.length !== 1) return undefined;
       const liveAt = at + Math.ceil(performance.now() - started);
       const rows = await tx`select d.grant_id,d.fields from oauth.signup_drafts d join oauth.grants g on g.id=d.grant_id
@@ -71,9 +73,13 @@ export class PgOAuthStore implements OAuthStore {
         and g.app_id=${app} and g.phone_key=${phoneKey} and g.person_id is not distinct from ${personId}
         and g.revoked_at is null and g.expires_at>${new Date(liveAt)} and 'profile:write'=any(g.scopes) for update of d`;
       if (rows.length !== 1) return undefined;
-      await tx`update oauth.signup_drafts set fields='{}'::jsonb,consumed_at=${new Date(at)} where grant_id=${rows[0].grant_id}`;
       return rows[0].fields as import("./store.ts").SignupDraftFields;
     }); } catch { throw new Error("Signup draft storage unavailable"); }
+  }
+
+  async discardSignupDrafts(phoneKey: string, app: McpAppId, at: number) {
+    try { await this.sql`update oauth.signup_drafts set fields='{}'::jsonb,consumed_at=${new Date(at)} where phone_key=${phoneKey} and app_id=${app}`; }
+    catch { throw new Error("Signup draft storage unavailable"); }
   }
 
   async putClient(c: OAuthClient) {

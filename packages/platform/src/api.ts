@@ -20,7 +20,7 @@ import { type OtpProvider, OtpService, type OtpLimits } from "./otp.ts";
 import { maskPhone, normalizePhone } from "./phone.ts";
 import { readCappedText } from "./body.ts";
 import { verifyProxyHeaders } from "./proxy.ts";
-import { SessionService, SESSION_TTL_MS, tokenHash } from "./sessions.ts";
+import { SessionService, SESSION_TTL_MS, tokenHash, signupAccountView } from "./sessions.ts";
 import type { PeopleStore } from "./store.ts";
 import type { TurnstileVerifier } from "./turnstile.ts";
 import type { PhotoService } from "./photos.ts";
@@ -443,7 +443,7 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
           const home = live && o.home && (who.personId === null || who.personId === live.personId)
             ? await o.home({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }) : null;
           return json(200, {
-            app: appId, phoneMasked: maskPhone(who.e164), membership: publicMembership(c.membership),
+            app: appId, ...(["ntwrk", "friends"].includes(appId) ? { signupView: signupAccountView(appId, accounts.phoneHash(who.e164)) } : {}), phoneMasked: maskPhone(who.e164), membership: publicMembership(c.membership),
             smsOptedIn: c.reason !== "review" && await accounts.optedIn(appId, who.e164),
             canJoin: c.canJoin, ...(c.reason && c.reason !== "member" ? { reason: c.reason } : {}),
             ...(participation ? { participation } : {}),

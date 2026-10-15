@@ -15,11 +15,12 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
   const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"},minStartMs:0,minVerifyMs:0});
   const session=await e.sessions.create("friends",PHONE_A,null);
   const out=mkdtempSync(join(tmpdir(),"signup-draft-ui-"));expect((await buildSite(site("friends"),out,{})).ok).toBe(true);
-  let release!:()=>void;const held=new Promise<void>(r=>{release=r;});let delay=false;
+  let release!:()=>void;let held=new Promise<void>(r=>{release=r;});let delay=false, rejectJoin=false;
   const server=Bun.serve({hostname:"127.0.0.1",port:0,async fetch(req){
     const u=new URL(req.url);
     if(u.pathname.startsWith("/api/")||u.pathname.startsWith("/oauth/")){
       // The normal site's signed proxy selects this exact app; fixture supplies that host boundary.
+      if(u.pathname==="/api/join"&&rejectJoin){rejectJoin=false;return Response.json({ok:false,error:"unauthorized"},{status:401});}
       const headers=new Headers(req.headers);headers.set("host","friends.help");if(req.method==="POST")headers.set("origin","https://friends.help");
       if(u.pathname==="/oauth/signup-draft"&&delay)await held;
       const proxied=new Request("https://friends.help"+u.pathname,{method:req.method,headers,...(req.method==="POST"?{body:await req.text()}:{})});
@@ -33,6 +34,8 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
     await context.addCookies([{name:"sid_friends",value:session.token,url:server.url.origin}]);
     const page=await context.newPage();await page.goto(server.url+"join?via=agent");
     await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Ari");
+    expect(await page.locator('[name="homeCity"]').inputValue()).toBe("sf");
+    await page.reload();await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Ari");
     expect(await page.locator('[name="homeCity"]').inputValue()).toBe("sf");
     expect(await page.locator('[name="age"]').inputValue()).toBe("");expect(await page.locator('[name="consent"]').isChecked()).toBe(false);
     await page.locator('[name="firstName"]').fill("Rae");await page.locator('[name="homeCity"]').selectOption("nyc");await page.locator('[name="age"]').fill("29");await page.locator('[name="consent"]').check();await page.locator('form[data-form="profile"] button[type="submit"]').click();
@@ -49,5 +52,25 @@ browserTest("approved authenticated draft fills editable fields; corrected Join 
     // Ensure the delayed claim actually finished before checking persisted human edits.
     await responseDone;await page.waitForLoadState("networkidle");
     expect(await page.locator('[name="firstName"]').inputValue()).toBe("Inez");expect(await page.locator('[name="homeCity"]').inputValue()).toBe("nyc");expect(await e.accounts.personFor(phone)).toBeUndefined();
+    // A delayed response for the old account must not cross a normal reauthentication.
+    held=new Promise<void>(r=>{release=r;});await page.reload();
+    await page.locator('[data-step="profile"]').waitFor({state:"visible"});
+    await page.locator('[name="firstName"]').fill("Oldedit");await page.locator('[name="age"]').fill("29");await page.locator('[name="consent"]').check();
+    rejectJoin=true;await page.locator('form[data-form="profile"] button[type="submit"]').click();
+    await page.locator('[data-step="phone"]').waitFor({state:"visible"});
+    // A different phone with the same last four digits proves the marker isn't a display guess.
+    const nextPhone="+13125550149",next=await connect(e,"friends.help",nextPhone);
+    await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Luca",homeCity:"sf"},{token:next.token.access_token});
+    e.clock.t+=31_000;delay=false;await page.locator('form[data-form="phone"] input[name="phone"]').fill(nextPhone);
+    await page.locator('form[data-form="phone"] button[type="submit"]').click();
+    await page.locator('[data-step="code"]').waitFor({state:"visible"});
+    await page.locator('input[name="code"]').fill(e.provider.last(nextPhone)!);
+    await page.locator('form[data-form="code"] button[type="submit"]').click();
+    await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('[name="firstName"]')?.value==="Luca");
+    release();await page.waitForLoadState("networkidle");
+    expect(await page.locator('[name="firstName"]').inputValue()).toBe("Luca");
+    expect(await page.locator('[name="age"]').inputValue()).toBe("");expect(await page.locator('[name="consent"]').isChecked()).toBe(false);
+    expect(await e.accounts.personFor(nextPhone)).toBeUndefined();
+
   }finally{release();await context.close();await browser.close();server.stop(true);rmSync(out,{recursive:true,force:true});}
 });

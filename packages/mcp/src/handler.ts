@@ -6,7 +6,7 @@
 // Spec: MCP 2026-07-28 (Streamable HTTP, stateless, per-request _meta; initialize kept for 2025-03-26
 // to 2025-11-25 clients), OAuth 2.1 with PKCE S256, RFC 7591 (registration), RFC 8414 and RFC 9728
 // (metadata), RFC 8707 (resource), RFC 9207 (iss), RFC 7009 (revocation).
-import { devShortcutsAllowed, ipBucket, type Env } from "@thenetwork/platform";
+import { devShortcutsAllowed, ipBucket, signupAccountView, type Env } from "@thenetwork/platform";
 import { verifyProxyHeaders } from "@thenetwork/platform/src/proxy.ts";
 import { readCappedText } from "@thenetwork/platform/src/body.ts";
 import { defaultApps, defaultHostMap, type McpApp, type McpAppId, type Surface } from "./apps.ts";
@@ -782,7 +782,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return mcp(c, o.surface ?? "full");
       case "/mcp/openai":
         return c.app.openai ? mcp(c, "openai") : json(404, { error: "not_found" });
-      case "/oauth/signup-draft": {
+      case "/oauth/signup-draft":
+      case "/oauth/signup-draft/discard": {
         if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
         // Same-origin session only. No draft IDs, phone or facts in URLs or request bodies.
         if (!originOk(c) || (req.headers.get("origin") === null && req.headers.get("sec-fetch-site") !== "same-origin") || url.search) return json(403, { error: "not_allowed" });
@@ -791,9 +792,15 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         if (!who) return json(401, { error: "sign_in_required" });
         const key = o.platform.phoneKey(who.e164);
         if (who.personId !== await o.platform.personForKey(key)) return json(403, { error: "not_allowed" });
+        if (p.endsWith("/discard")) {
+          const body = await readJson(req);
+          if (!body || body.signupView !== signupAccountView(c.app.id, key)) return json(403, { error: "not_allowed" });
+          await store.discardSignupDrafts(key, c.app.id, now());
+          return json(200, { discarded: true }, who.setCookie ? { "set-cookie": who.setCookie } : {});
+        }
         if (who.personId !== null && !["not_joined", "invited"].includes(await o.platform.status(who.personId, c.app.id))) return json(403, { error: "not_allowed" });
         const draft = await store.claimSignupDraft(key, c.app.id, who.personId, now());
-        const response = json(200, { draft: draft ?? null }, { "cache-control": "no-store" });
+        const response = json(200, { draft: draft ?? null, signupView: signupAccountView(c.app.id, key) }, { "cache-control": "no-store" });
         if (who.setCookie) response.headers.append("set-cookie", who.setCookie);
         return response;
       }

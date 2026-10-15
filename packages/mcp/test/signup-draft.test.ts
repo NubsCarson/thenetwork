@@ -9,21 +9,26 @@ const browser = async (e: ReturnType<typeof setup>, phone: string) => {
   const s=await e.sessions.create("friends",phone,null);return `sid_friends=${s.token}`;
 };
 
-test("verified-phone OAuth draft is app-bound, single-use, editable before normal Join and never opts in", async () => {
+test("verified-phone OAuth draft is app-bound, recoverable until deliberate use, editable before normal Join and never opts in", async () => {
   const e=setup(), c=await connect(e,"friends.help",PHONE_A), token=c.token.access_token;
   const saved=await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",homeCity:"sf"},{token});
   expect(saved.body!.result.structuredContent).toMatchObject({prepared:true,url:"https://friends.help/join?via=agent"});
   expect(saved.text).not.toContain(PHONE_A);
   expect(await e.accounts.personFor(PHONE_A)).toBeUndefined();
   expect((await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Overwrite"},{token})).body!.result.isError).toBe(true);
-  expect(await (await claim(e,await browser(e,PHONE_B))).json()).toEqual({draft:null});
+  expect(await (await claim(e,await browser(e,PHONE_B))).json()).toMatchObject({draft:null});
   const nt=await e.sessions.create("ntwrk",PHONE_A,null);
-  expect(await (await claim(e,`sid_ntwrk=${nt.token}`,"ntwrk.party")).json()).toEqual({draft:null});
+  expect(await (await claim(e,`sid_ntwrk=${nt.token}`,"ntwrk.party")).json()).toMatchObject({draft:null});
   const cookie=await browser(e,PHONE_A);
   expect((await claim(e,cookie,"friends.help","https://evil.example")).status).toBe(403);
   const taken=await claim(e,cookie);expect(taken.headers.get("cache-control")).toBe("no-store");
-  expect(await taken.json()).toEqual({draft:{firstName:"Ari",homeCity:"sf"}});
-  expect(await (await claim(e,cookie)).json()).toEqual({draft:null});
+  const shown=await taken.json() as {draft:unknown;signupView:string};
+  expect(shown.draft).toEqual({firstName:"Ari",homeCity:"sf"});
+  // Same-account reload/retry, including a response the browser never used, remains recoverable.
+  expect(await (await claim(e,cookie)).json()).toEqual(shown);
+  const discard = await e.fetch(new Request("https://friends.help/oauth/signup-draft/discard",{method:"POST",headers:{cookie,origin:"https://friends.help","content-type":"application/json"},body:JSON.stringify({signupView:shown.signupView})}));
+  expect(discard.status).toBe(200);
+  expect(await(await claim(e,cookie)).json()).toMatchObject({draft:null});
   expect(await e.accounts.personFor(PHONE_A)).toBeUndefined();
   // Human corrects the name/city and supplies age + explicit app consent through the normal API.
   const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"},minStartMs:0,minVerifyMs:0});
@@ -45,10 +50,40 @@ test("draft refuses private extra fields, lacks unauthenticated writes, expires 
     expect((await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari",...extra},{token})).body!.result.isError).toBe(true);
   expect((await call(e,"https://friends.help/mcp","start_signup",{app:"friends",firstName:"Ari"})).body!.result.isError).toBe(true);
   await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari"},{token});e.clock.t+=10*60_000;
-  expect(await(await claim(e,await browser(e,PHONE_A))).json()).toEqual({draft:null});
+  expect(await(await claim(e,await browser(e,PHONE_A))).json()).toMatchObject({draft:null});
   const other=setup(), oc=await connect(other,"friends.help",PHONE_A);
   await call(other,"https://friends.help/mcp","prepare_signup",{firstName:"Ari"},{token:oc.token.access_token});
   const grants=await other.store.grantsFor(other.accounts.phoneHash(PHONE_A),"friends",other.clock.t);
   await other.store.revokeGrant(grants[0].id,other.clock.t);
-  expect(await(await claim(other,await browser(other,PHONE_A))).json()).toEqual({draft:null});
+  expect(await(await claim(other,await browser(other,PHONE_A))).json()).toMatchObject({draft:null});
+});
+
+
+test("revoked stale drafts do not hide a new approved draft; two genuinely live drafts stay ambiguous",async()=>{
+  const e=setup(), first=await connect(e,"friends.help",PHONE_A);
+  await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Ari"},{token:first.token.access_token});
+  const old=(await e.store.grantsFor(e.accounts.phoneHash(PHONE_A),"friends",e.clock.t))[0];await e.store.revokeGrant(old.id,e.clock.t);
+  const second=await connect(e,"friends.help",PHONE_A);
+  await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Rae"},{token:second.token.access_token});
+  const cookie=await browser(e,PHONE_A);expect(await(await claim(e,cookie)).json()).toMatchObject({draft:{firstName:"Rae"}});
+  const third=await connect(e,"friends.help",PHONE_A);
+  await call(e,"https://friends.help/mcp","prepare_signup",{firstName:"Tess"},{token:third.token.access_token});
+  expect(await(await claim(e,cookie)).json()).toMatchObject({draft:null});
+  const wrong=await browser(e,PHONE_B);
+  const a=await(await claim(e,cookie)).json()as any,b=await(await claim(e,wrong)).json()as any;
+  expect(a.signupView).not.toBe(b.signupView);expect(a.signupView).not.toContain(PHONE_A);
+  const denied=await e.fetch(new Request("https://friends.help/oauth/signup-draft/discard",{method:"POST",headers:{cookie:wrong,origin:"https://friends.help","content-type":"application/json"},body:JSON.stringify({signupView:a.signupView})}));
+  expect(denied.status).toBe(403);
+});
+
+
+test("normal account view distinguishes same-last-four phone sessions and never authorizes a request",async()=>{
+  const e=setup(), sameLastFour="+13125550142";
+  const cookieA=await browser(e,PHONE_A),cookieB=await browser(e,sameLastFour);
+  const api=createPublicApi({store:e.people,otp:e.provider,hashKey:"test-hash-key",sessionSecret:"test-session-secret",now:()=>e.clock.t,env:{PLATFORM_ENV:"dev"}});
+  const me=async(cookie:string)=>(await api.fetch(new Request("https://friends.help/api/me",{headers:{host:"friends.help",cookie}})))!;
+  const a=await(await me(cookieA)).json()as any,b=await(await me(cookieB)).json()as any;
+  expect(a.phoneMasked).toBe(b.phoneMasked);expect(a.signupView).toMatch(/^[a-f0-9]{64}$/);expect(a.signupView).not.toBe(b.signupView);
+  expect((await(await claim(e,cookieA)).json()as any).signupView).toBe(a.signupView);
+  expect((await me(`sid_friends=${a.signupView}`)).status).toBe(401);
 });

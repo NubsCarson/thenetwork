@@ -90,6 +90,8 @@ export interface Participation {
 
 export interface Me {
   app: string;
+  /** Opaque app/account view marker; never an authentication credential. */
+  signupView?: string;
   phoneMasked: string;
   membership: Membership | null;
   canJoin: boolean;

@@ -100,8 +100,9 @@ export interface SignupDraft { grantId: string; app: McpAppId; phoneKey: string;
 export interface OAuthStore {
   /** One draft per grant; no overwrite/replay. Grant liveness and scope checked atomically. */
   putSignupDraft(d: SignupDraft, at: number): Promise<boolean>;
-  /** Claim once for the verified browser phone and app, with the grant still live. */
+  /** Recoverable read for the verified phone/app until deliberate discard or expiry. */
   claimSignupDraft(phoneKey: string, app: McpAppId, personId: string | null, at: number): Promise<SignupDraftFields | undefined>;
+  discardSignupDrafts(phoneKey: string, app: McpAppId, at: number): Promise<void>;
 
   putClient(c: OAuthClient): Promise<void>;
   getClient(id: string): Promise<OAuthClient | undefined>;
@@ -169,13 +170,17 @@ export class MemoryOAuthStore implements OAuthStore {
     this.signupDrafts.set(g.id, structuredClone(d)); return true;
   }
   async claimSignupDraft(phoneKey: string, app: McpAppId, personId: string | null, at: number) {
-    const drafts = [...this.signupDrafts.values()].filter(d => d.phoneKey === phoneKey && d.app === app && d.consumedAt === null && d.expiresAt > at);
-    // Ambiguous assistant drafts need a fresh explicit handoff, never silently choose one.
+    const drafts = [...this.signupDrafts.values()].filter(d => {
+      const g = this.grants.get(d.grantId);
+      return d.phoneKey === phoneKey && d.app === app && d.consumedAt === null && d.expiresAt > at && g?.revokedAt === null && g.expiresAt > at && g.personId === personId && g.app === app && g.phoneKey === phoneKey && g.scopes.includes("profile:write");
+    });
     if (drafts.length !== 1) return undefined;
-    const d = drafts[0], g = this.grants.get(d.grantId);
-    if (!g || g.revokedAt !== null || g.expiresAt <= at || g.personId !== personId || !g.scopes.includes("profile:write")) return undefined;
-    const fields = structuredClone(d.fields); d.fields = { firstName: "" }; d.consumedAt = at; return fields;
+    return structuredClone(drafts[0].fields);
   }
+  async discardSignupDrafts(phoneKey: string, app: McpAppId, at: number) {
+    for (const d of this.signupDrafts.values()) if (d.phoneKey === phoneKey && d.app === app) { d.fields = { firstName: "" }; d.consumedAt = at; }
+  }
+
 
   async putClient(c: OAuthClient) { this.clients.set(c.id, structuredClone(c)); }
   async getClient(id: string) { return copy(this.clients.get(id)); }
