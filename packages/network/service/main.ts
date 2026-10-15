@@ -13,6 +13,7 @@ import { BlooioClient } from "../../blooio/src/blooio/client.ts";
 import { BlooioAdapter as ProviderAdapter } from "../../blooio/src/adapters/blooio-adapter.ts";
 import { resolveSenderLine } from "../../blooio/src/line.ts";
 import { assertBootConfig } from "../../platform/src/env.ts";
+import { networkRoutePolicy } from "./route-authority.ts";
 import { CloudChannelAdapter } from "./cloud-channel.ts";
 import { BlooioAdapter, liveFlag, liveSendAllowed } from "./channel.ts";
 import { serveService, startTicks } from "./serve.ts";
@@ -29,7 +30,7 @@ async function main() {
   // review mode "human" (env.ts bootConfigProblems). Only PLATFORM_ENV=dev gets the dev shortcuts.
   const env = assertBootConfig();
   const once = process.argv.includes("--once");
-  const dryRun = process.argv.includes("--dry-run");
+  const dryRun = process.argv.includes("--dry-run") || !!networkRoutePolicy(process.env);
   const url = process.env.NETWORK_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!url) throw new Error("set NETWORK_DATABASE_URL (or DATABASE_URL) to the Postgres with the network and platform schemas (bun run db:migrate)");
   const clock = new RealClock();

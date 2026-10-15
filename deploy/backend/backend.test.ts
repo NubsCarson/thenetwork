@@ -18,6 +18,15 @@ const DEPLOYED = {
 };
 
 describe("config", () => {
+  test("isolated signed route cannot enable direct Blooio or proactive Cloud sends", () => {
+    const policy = JSON.stringify({authority:{version:1,routeId:"qa",generation:"g1",audience:"network-qa",realmId:"qa"},admitUntil:1000,drainUntil:2000});
+    for (const NETWORK_CHANNEL of ["blooio", "eliza_cloud"]) {
+      const c = loadConfig({...DEPLOYED,NETWORK_ROUTE_AUTHORITY_POLICY:policy,NETWORK_CHANNEL,BLOOIO_ALLOW_SEND:"1",NTWRK_LIVE_APPROVED:"1",FRIENDS_LIVE_APPROVED:"1",BLOOIO_API_KEY:"synthetic",BLOOIO_FROM:"+12125550142"});
+      expect(c.channel).toBe("dry-run");
+    }
+    expect(() => loadConfig({...DEPLOYED,PLATFORM_ENV:"production",NETWORK_ROUTE_AUTHORITY_POLICY:policy})).toThrow(/staging/);
+  });
+
   test("binds loopback locally and every interface only when deployed", () => {
     const dev = loadConfig({ PLATFORM_ENV: "dev", DATABASE_URL: "postgres://x@localhost/x" });
     expect(dev.host).toBe("127.0.0.1");

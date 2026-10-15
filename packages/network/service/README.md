@@ -274,7 +274,7 @@ without an authority unchanged and refuses requests that carry one.
 
 New turns require the exact configured tuple before `admitUntil`; the inbox claim
 stores that tuple atomically in `platform.inbound.network_authority` (migration
-0035). Until `drainUntil`, only an existing matching turn may replay or accept its
+0036). Until `drainUntil`, only an existing matching turn may replay or accept its
 normal receipt/actions. Original signed raw-body hashes and member/app ownership
 checks remain mandatory. Relay and unbound outbound Cloud sends are refused in
 an isolated realm. Handled replies still use the gateway's original signed turn
