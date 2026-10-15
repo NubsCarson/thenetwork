@@ -8,7 +8,7 @@ metadata:
   site: https://friends.help
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.2"
+  version: "1.1.3"
 ---
 
 # friends.help
