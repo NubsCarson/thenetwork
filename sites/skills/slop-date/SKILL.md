@@ -8,13 +8,15 @@ metadata:
   site: https://slop.date
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.1"
+  version: "1.1.3"
 ---
 
 # slop.date
 
 If the person asked you to read this file and follow it, they want to join. Start now with
 "How a person joins" below.
+
+{{RESPONSE_STYLE}}
 
 slop.date is dating by text message. The person texts with a matchmaker agent.
 It learns who they hope to meet and, now and then, suggests one person. Nobody is introduced

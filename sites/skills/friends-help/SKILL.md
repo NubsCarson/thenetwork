@@ -8,13 +8,15 @@ metadata:
   site: https://friends.help
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.1"
+  version: "1.1.3"
 ---
 
 # friends.help
 
 If the person asked you to read this file and follow it, they want to join. Start now with
 "How a person joins" below.
+
+{{RESPONSE_STYLE}}
 
 friends.help helps people make friends, by text. The agent learns what the person
 likes to do and suggests small group plans (3 to 6 people) at public places near them: parks,
