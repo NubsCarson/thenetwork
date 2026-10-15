@@ -78,7 +78,7 @@ export class Inbox {
   currentTurn = () => this.turns.getStore();
 
   /** A committed claim precedes effects; the partial index admits one signed turn per sender. */
-  async signed(input: TurnRequest, requestHash: string, run: (turn: InboundTurn) => Promise<TurnResponse>): Promise<{status: number; body: unknown}> {
+  async signed(input: TurnRequest, requestHash: string, run: (turn: InboundTurn) => Promise<TurnResponse>, admitUntil?: number): Promise<{status: number; body: unknown}> {
     const id = `msg:${input.channel}:${input.messageId}`, senderHash = this.o.senderKey(input.from);
     const now = this.o.clock.now();
     // STOP, START and HELP are never held back by an earlier turn that did not finish (consent always gets through).
@@ -86,12 +86,14 @@ export class Inbox {
     const wrote = await this.o.sql.begin(async tx => {
       const [lock] = await tx`select pg_try_advisory_xact_lock(hashtext(${`inbox-sender:${normalizeAddress(input.from)}`})) as acquired`;
       if (!lock.acquired) return [];
+      // Admission is checked again after acquiring the sender lock, before any write.
+      if (admitUntil !== undefined && this.o.clock.now() >= admitUntil) return [];
       // A turn whose worker stopped (no completion within the lease) is unresolved, not processing forever.
       await tx`update platform.inbound set status='unresolved',event=null,sender=null
         where sender_hash=${senderHash} and status='processing' and request_hash is not null and arrived_at<${new Date(now - PROCESSING_LEASE_MS)}`;
-      return tx`insert into platform.inbound(id,line,sender,received_at,arrived_at,event,status,request_hash,sender_hash)
-      select ${id},null,null,${new Date(input.receivedAt)},${new Date(now)},null,'processing',${requestHash},${senderHash}
-      where not exists(select 1 from platform.inbound where sender_hash=${senderHash} and (status='processing'
+      return tx`insert into platform.inbound(id,line,sender,received_at,arrived_at,event,status,request_hash,sender_hash,network_authority)
+      select ${id},null,null,${new Date(input.receivedAt)},${new Date(now)},null,'processing',${requestHash},${senderHash},${input.networkAuthority ?? null}::jsonb
+      where ${admitUntil === undefined || now < admitUntil} and not exists(select 1 from platform.inbound where sender_hash=${senderHash} and (status='processing'
         or (not ${keyword} and (status='pending' or (status='unresolved' and arrived_at>${new Date(now - UNRESOLVED_BLOCK_MS)})))))
       on conflict do nothing returning id`;
     });

@@ -9,6 +9,7 @@ import {svcSign} from "../../core/src/svc/svc-auth.ts";
 import {TURN_PATH, TURN_RECEIPT_PATH, type TurnRequest, type TurnReceiptRequest} from "../../core/src/svc/contract.ts";
 import {DryRunAdapter} from "../service/channel.ts";
 import {NetworkService} from "../service/service.ts";
+import {networkRoutePolicy, routeEnvelopeAllowed} from "../service/route-authority.ts";
 
 const db = `network_signed_turn_${randomUUID().replaceAll("-", "")}`;
 const admin = new SQL({url:`postgres://${process.env.USER ?? "postgres"}@127.0.0.1:54339/postgres`, max:1});
@@ -17,9 +18,9 @@ const secret = "synthetic-shared-agent-test-secret-20261009";
 const clock = new SimClock(Date.UTC(2026, 9, 9, 16));
 let sql: SQL, service: NetworkService, server: ReturnType<typeof Bun.serve>;
 let escaped = 0, code = "";
-const start = async () => {
+const start = async (routePolicy?: Record<string, unknown>) => {
   service = new NetworkService({url, clock, photoStorage:null, instance:"signed-turn-integration",
-    env:{PLATFORM_ENV:"dev", CLEF_RATINGS:"off", SERVICE_TURN_SECRET:secret}, networks:[{id:"ntwrk:nyc",matchingEnabled:false},{id:"slop:nyc",matchingEnabled:false},{id:"friends:nyc",matchingEnabled:false}],
+    env:{PLATFORM_ENV:routePolicy ? "staging" : "dev", PLATFORM_HASH_KEY:"synthetic-route-test-hash-key", CLEF_RATINGS:"off", SERVICE_TURN_SECRET:secret, ...(routePolicy ? {NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(routePolicy)} : {})}, networks:[{id:"ntwrk:nyc",matchingEnabled:false},{id:"slop:nyc",matchingEnabled:false},{id:"friends:nyc",matchingEnabled:false}],
     network:{seed:1}, publicApi:{minStartMs:0,minVerifyMs:0,otp:{name:"fixture",send:async () => {code="314159";return {code};}}},
     adapter:() => {const a=new DryRunAdapter(()=>{});a.direct=async()=>{escaped++;return "dry_run";};a.deliver=async rows=>{escaped+=rows.length;return rows.map(r=>({id:r.id,status:"dry_run"}));};return a;},log:()=>{},
   });
@@ -250,4 +251,73 @@ test("the Cloud turn secret is never also a staff bearer token", () => {
   expect(() => make({tokens:`admin@*:${secret}`})).toThrow(/SERVICE_TURN_SECRET must differ/);
   expect(() => make({tokens:`reviewer@slop:other-staff-token-0001,admin@*:console-token-00000001`, consoleToken:secret})).toThrow(/SERVICE_TURN_SECRET must differ/);
   expect(() => make({tokens:"admin@*:console-token-00000001", consoleToken:"console-token-00000001"})).not.toThrow();
+});
+
+
+test("isolated route authority fences cross-realm writes and only drains exact durable turns", async () => {
+  server.stop(true); await service.close();
+  const authority = {version:1 as const,routeId:"owned-route",generation:"generation-1",audience:"network-owned-qa",realmId:"owned-qa"};
+  const begin = clock.now(), policy = {authority,admitUntil:begin+MINUTE,drainUntil:begin+2*MINUTE};
+  await start(policy);
+  const input = {...turn("isolated-help", "+12125550991", "HELP"), networkAuthority:authority};
+  const [before] = await sql`select count(*)::int as count from platform.inbound`;
+  for (const networkAuthority of [undefined,{...authority,realmId:"production"},{...authority,generation:"old"},{...authority,audience:"wrong"},{...authority,routeId:"other"},{...authority,extra:true}]) {
+    expect((await post({...input,networkAuthority})).status).toBe(403);
+  }
+  const [untouched] = await sql`select count(*)::int as count from platform.inbound`;
+  expect(untouched.count).toBe(before.count);
+  const accepted = await post(input); expect(accepted.status).toBe(200); const response = await accepted.json() as any;
+  const [stored] = await sql`select network_authority,request_hash from platform.inbound where id='msg:blooio:isolated-help'`;
+  expect(stored.network_authority).toEqual(authority);
+  expect(stored.request_hash).toBe(new Bun.CryptoHasher("sha256").update(JSON.stringify(input)).digest("hex"));
+  const phone = "+12125550993";
+  let step = 0;
+  const qa = (text:string) => ({...turn(`isolated-open-${++step}`,phone,text,"friends"),networkAuthority:authority});
+  for (const text of ["friends.help","Noa, 29","I enjoy hiking and cooking","Saturday afternoons work for me","Small groups are good"]) expect((await post(qa(text))).status).toBe(200);
+  const open = qa("Tell me about the weather"), opened = await (await post(open)).json() as any;
+  expect(opened.outcome).toBe("open");
+  const action = {channel:open.channel,messageId:open.messageId,app:opened.app,memberId:opened.memberId,networkAuthority:authority};
+  const updates = async (body:Record<string,unknown>) => {
+    const raw = JSON.stringify(body);
+    return fetch(new URL("/internal/updates",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/updates",id:`${open.messageId}:updates`,body:raw,nowS:Math.floor(clock.now()/1000)})},body:raw});
+  };
+  expect((await updates(action)).status).toBe(200);
+  expect((await updates({...action,memberId:"different-member"})).status).toBe(403);
+  expect((await updates({...action,networkAuthority:{...authority,generation:"old"}})).status).toBe(403);
+  clock.advance(MINUTE);
+  expect((await updates(action)).status).toBe(200);
+  expect(await (await post(input)).json()).toEqual(response);
+  expect((await post({...input,text:"STOP"})).status).toBe(409);
+  expect((await post({...input,messageId:"isolated-new-after-close"})).status).toBe(403);
+  const ack = {channel:input.channel,messageId:input.messageId,replyIds:response.replyIds,outcome:"accepted" as const,providerMessageIds:["synthetic-isolated-receipt"],historyRecorded:false,networkAuthority:authority};
+  expect((await receipt(ack)).status).toBe(200);
+  expect((await receipt({...ack,networkAuthority:{...authority,realmId:"wrong"}})).status).toBe(403);
+  const raw = JSON.stringify({channel:input.channel,messageId:input.messageId,app:"friends",memberId:"none",itemId:null,text:"tell them hi",networkAuthority:authority});
+  const relay = await fetch(new URL("/internal/relay",server.url),{method:"POST",headers:{"content-type":"application/json",...await svcSign(secret,{method:"POST",path:"/internal/relay",id:`${input.messageId}:relay`,body:raw,nowS:Math.floor(clock.now()/1000)})},body:raw});
+  expect(relay.status).toBe(403);
+  clock.advance(MINUTE);
+  expect((await post(input)).status).toBe(403);
+  expect((await receipt(ack)).status).toBe(403);
+  expect((await updates(action)).status).toBe(403);
+  server.stop(true); await service.close(); await start();
+  expect((await post(input)).status).toBe(403);
+  expect((await post(turn("legacy-after-isolation", "+12125550992", "HELP"))).status).toBe(200);
+}, 60_000);
+
+
+test("route policy boot validation rejects malformed or non-staging authority", () => {
+  const authority = {version:1,routeId:"owned-route",generation:"generation-1",audience:"network-owned-qa",realmId:"owned-qa"};
+  const value = {authority,admitUntil:1000,drainUntil:2000};
+  const env = {PLATFORM_ENV:"staging",NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(value)};
+  const valid = networkRoutePolicy(env);
+  expect(valid?.authority).toEqual(authority);
+  expect(networkRoutePolicy({})).toBeUndefined();
+  expect(routeEnvelopeAllowed(undefined, authority, 0)).toBe(false);
+  expect(routeEnvelopeAllowed(valid, authority, 1999)).toBe(true);
+  expect(routeEnvelopeAllowed(valid, authority, 2000)).toBe(false);
+  for (const bad of [null, [], {...value,extra:true}, {...value,admitUntil:0}, {...value,drainUntil:999}, {...value,drainUntil:Infinity}, {...value,authority:{...authority,url:"https://elsewhere.invalid"}}, {...value,authority:{...authority,version:2}}]) {
+    expect(() => networkRoutePolicy({...env,NETWORK_ROUTE_AUTHORITY_POLICY:JSON.stringify(bad)})).toThrow();
+  }
+  expect(() => networkRoutePolicy({...env,PLATFORM_ENV:"production"})).toThrow();
+  expect(() => networkRoutePolicy({...env,PLATFORM_ENV:"dev"})).toThrow();
 });

@@ -43,6 +43,8 @@ import type { NetworkRuntime } from "./runtime.ts";
 import type { CostLedger } from "./cost.ts";
 import { isProduction } from "../../platform/src/env.ts";
 
+import { routeEnvelopeAllowed, type NetworkRoutePolicy } from "./route-authority.ts";
+
 export { RELAY_PATH };
 /** A relay request is small: Cloud caps the text at 2000 characters. */
 export const RELAY_MAX_BODY_BYTES = 16 * 1024;
@@ -60,6 +62,7 @@ export interface RelayEndpointDeps {
   sql: SQL;
   clock: Clock;
   secret: string | undefined;
+  routePolicy?: NetworkRoutePolicy;
   accounts: Accounts;
   runtimeFor(app: AppId): NetworkRuntime | undefined;
   /** The network ('<app>:<city>') this member belongs to; falls back to runtimeFor(app) when absent. */
@@ -143,6 +146,7 @@ export async function relayEndpoint(d: RelayEndpointDeps, req: Request): Promise
   if (!auth.ok) return json({ error: auth.reason }, auth.reason === "no_secret" ? 503 : 401);
   let b: Record<string, unknown>;
   try { b = JSON.parse(raw); } catch { return json({ error: "invalid_request" }, 400); }
+  if (!routeEnvelopeAllowed(d.routePolicy, b?.networkAuthority, d.clock.now()) || d.routePolicy) return json({ error: "route_authority_invalid" }, 403);
   const id = (v: unknown, max: number) => typeof v === "string" && !!v.trim() && v.length <= max && !/[\r\n\u0000]/.test(v);
   if (!b || typeof b !== "object" || Array.isArray(b) || Object.keys(b).length !== KEYS.length || Object.keys(b).some(k => !(KEYS as string[]).includes(k))
     || (b.channel !== "blooio" && b.channel !== "twilio") || !id(b.messageId, 512) || !isAppId(b.app) || !id(b.memberId, 256)

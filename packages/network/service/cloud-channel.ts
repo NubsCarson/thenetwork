@@ -25,6 +25,8 @@ export class CloudChannelAdapter extends BlooioAdapter {
       const scope=request.context;
       if (!scope || scope.app!==options.app || !NETWORK_APP_IDS.includes(scope.app as NetworkAppId) || normalizePhone(request.to)!==request.to || request.mediaUrls?.length)
         throw new ChannelSendError("Cloud delivery needs a canonical text and persisted queue scope","invalid");
+      if (options.env?.NETWORK_ROUTE_AUTHORITY_POLICY !== undefined)
+        throw new ChannelSendError("Isolated route delivery requires its original signed turn authority", "invalid");
       const payload:DeliverRequest={id:scope.id,to:request.to,text:request.text,app:options.app,memberId:scope.memberId,channel:"blooio",
         // A relayed item (packages/network/src/relay.ts) is queued with the outbound id "relay:<item>".
         kind:scope.kind==="reply" || scope.kind==="compliance" ? "reply" : scope.id.startsWith("relay:") ? "relay" : "proactive"};
