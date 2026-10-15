@@ -95,6 +95,25 @@ describe("Streamable HTTP, 2026-07-28", () => {
     // A bad token on any call is 401, never served as anonymous.
     expect((await call(env, NTWRK, "app_info", {}, { token: "ntwa_forged" })).res.status).toBe(401);
   });
+
+  test("active membership status stays read-only and does not promise matching or delivery", async () => {
+    const env = setup();
+    await addMember(env, PHONE_A, [{ app: "friends", state: "active" }]);
+    const connection = await connect(env, "friends.help", PHONE_A, { scope: "membership:read" });
+    const person = (await env.accounts.personFor(PHONE_A))!;
+    const before = await env.people.getMembership(person.id, "friends");
+    const sends = env.provider.sent.length;
+    const r = await call(env, `${origin("friends.help")}/mcp`, "check_status", {}, { token: connection.token.access_token });
+    expect(r.res.status).toBe(200);
+    expect(r.body!.result.isError).toBe(false);
+    const status = r.body!.result.structuredContent;
+    expect(status).toMatchObject({ app: "friends", status: "active", manage_url: "https://friends.help/settings" });
+    // Membership is confirmed; no delivery or matching capability was supplied to this handler.
+    expect(status.next_step).not.toMatch(/\b(texts?|messages?|matching|introductions?|ready)\b/i);
+    expect(status.next_step).toMatch(/signed up/i);
+    expect(await env.people.getMembership(person.id, "friends")).toEqual(before);
+    expect(env.provider.sent.length).toBe(sends);
+  });
 });
 
 describe("surface=openai hides slop", () => {
