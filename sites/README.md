@@ -36,7 +36,7 @@ Ages on the pages equal the platform registry (`packages/platform/src/apps.ts` `
 - `skills.config.ts`: the one backend origin and the MCP URL template (`BACKEND_ORIGIN`, `MCP_URL`;
   defaults `https://api.ntwrk.party` and `https://{domain}/mcp`). Each site is its own MCP endpoint
   (the router forwards `/mcp` with the site's signed host); the backend origin's `/mcp` names no app. The build fills `{{BACKEND_ORIGIN}}`,
-  `{{MCP_URL}}`, `{{TEXT_LINE}}` and `{{TURNSTILE_SITE_KEY}}` in pages and skills, and fails on a leftover `{{`.
+  `{{MCP_URL}}`, `{{TEXT_LINE}}`, `{{MESSAGES_HREF}}` and `{{TURNSTILE_SITE_KEY}}` in pages and skills, and fails on a leftover `{{`.
 - `shared/`: the only JavaScript. `join.ts`, `settings.ts`, `auth.ts`, `turnstile.ts` and `demo.ts`
   find elements by `data-*` attributes, so each site writes its own markup and copy.
 - `sites.ts`: the site list and the build (Bun's HTML bundler, then `static/`, `_headers` and the

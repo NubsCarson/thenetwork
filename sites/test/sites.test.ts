@@ -53,7 +53,7 @@ describe.each(SITES)("$domain", (s) => {
     const header = read(s, "index.html").match(/<header[^>]*>([\s\S]*?)<\/header>/)?.[1] ?? "";
     expect(header, s.domain).toMatch(/<a[^>]*href="\/settings"[^>]*>Sign in<\/a>/);
     const account = read(s, "settings.html");
-    expect(account, s.domain).toContain(`href="sms:${TEXT_LINE}"`);
+    expect(account, s.domain).toContain(`href="sms:${TEXT_LINE}?&amp;body=${encodeURIComponent(keywordFor(s))}"`);
     expect(account, s.domain).toContain("Open Messages");
     expect(account, s.domain).toContain('<option value="" disabled>Select your home city</option>');
   });

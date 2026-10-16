@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { dirname, join, relative } from "node:path";
 import { mcpUrlFor, skillsConfig } from "./skills.config.ts";
 import { RESPONSE_STYLE } from "./skill-responses.ts";
-import { agentRow, promptFor } from "./agents.ts";
+import { agentRow, messagesHref, promptFor } from "./agents.ts";
 import { RUN_WORKER_FIRST } from "../deploy/router.ts";
 import { stagingSiteOrigins } from "../packages/platform/src/apps.ts";
 
@@ -228,7 +228,7 @@ export async function buildSite(s: Site, outdir: string, env: Record<string, str
       if (statSync(full).size === 0) problems.push(`${f} is empty`);
       if (!TEXT.test(f)) continue;
       const before = readFileSync(full, "utf8");
-      const after = fill(before, env, s.domain);
+      const after = fill(before.replaceAll("{{MESSAGES_HREF}}", messagesHref(s, skillsConfig(env).TEXT_LINE)), env, s.domain);
       if (after !== before) writeFileSync(full, after);
       if (after.includes("{{")) problems.push(`${f} has an unfilled {{placeholder}}`);
       if (env.DEPLOY_TARGET === "production" && f.endsWith(".html")) {
