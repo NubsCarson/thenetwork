@@ -42,6 +42,10 @@ export const promptFor = (s: Pick<Site, "domain">, version: string) => `Read htt
 /** The first text that joins this app on the shared line (packages/platform/src/apps.ts keywordApp). */
 export const keywordFor = (s: Pick<Site, "app">) => (s.app === "ntwrk" ? "network" : s.app);
 
+/** Opens the shared Messages line with this app's routing keyword on Apple and Android. */
+export const messagesHref = (s: Pick<Site, "app">, textLine: string) =>
+  `sms:${textLine}?&amp;body=${encodeURIComponent(keywordFor(s))}`;
+
 const logo = (name: string) => readFileSync(join(import.meta.dir, "shared/logos", `${name}.svg`), "utf8").trim();
 const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 
@@ -60,8 +64,6 @@ export function agentRow(s: Pick<Site, "app" | "domain">, textLine: string, vers
       ? `<a ${common} href="${esc(a.href.replace("{q}", q).replace("{skill}", skill))}" target="_blank" rel="noopener" aria-label="Open in ${esc(a.name)}">${logo(a.logo)}</a>`
       : `<button type="button" ${common} hidden aria-label="Copy the prompt for ${esc(a.name)}">${logo(a.logo)}</button>`;
   });
-  // "?&body=" is the form both Apple Messages and Android accept.
-  const sms = `sms:${textLine}?&amp;body=${encodeURIComponent(keywordFor(s))}`;
-  tiles.push(`<a class="l-agent l-text" data-agent="text" data-tip="Text us" data-only="messages" href="${sms}" aria-label="Join by text message">${logo("imessage")}</a>`);
+  tiles.push(`<a class="l-agent l-text" data-agent="text" data-tip="Text us" data-only="messages" href="${messagesHref(s, textLine)}" aria-label="Join by text message">${logo("imessage")}</a>`);
   return tiles.join("\n    ");
 }
