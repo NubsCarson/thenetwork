@@ -5,7 +5,7 @@
 //  - A session is rotated after a day; the old token works 60 more seconds (requests in flight).
 //  - A chain of rotations ends 90 days after the login (startedAt): then the person logs in again.
 //  - Delete everything needs a fresh login (within 10 minutes): a stolen old cookie cannot do it.
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { AppId } from "./apps.ts";
 import type { PeopleStore, Session } from "./store.ts";
 
@@ -21,6 +21,9 @@ export const STEP_UP_MS = 10 * 60_000;
 export const newToken = () => randomBytes(32).toString("base64url");
 /** The stored form of a token: a keyed hash, so a database copy cannot be turned into cookies. */
 export const tokenHash = (token: string, secret: string) => createHmac("sha256", secret).update(`session:${token}`).digest("hex");
+
+/** Non-authorizing view marker from a verified app/phone binding. Never accepted as a credential. */
+export const signupAccountView = (app: string, phoneKey: string) => createHash("sha256").update(`signup-view:${app}:${phoneKey}`).digest("hex");
 
 export class SessionService {
   constructor(private readonly store: PeopleStore, private readonly opts: { secret: string; now?: () => number; ttlMs?: number; rotateMs?: number; maxMs?: number }) {}

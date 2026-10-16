@@ -15,6 +15,7 @@ export type ApiError =
   | "invalid_phone"
   | "invalid"
   | "home_runtime_conflict"
+  | "account_changed"
   | "turnstile"
   | "under_age"
   | "invite_only"
@@ -34,6 +35,7 @@ export const PLATFORM_ERRORS: Record<string, ApiError> = {
   invalid_phone: "invalid_phone",
   invalid: "invalid",
   home_runtime_conflict: "home_runtime_conflict",
+  account_changed: "account_changed",
   turnstile: "turnstile",
   under_age: "under_age",
   invite_only: "invite_only",
@@ -90,6 +92,8 @@ export interface Participation {
 
 export interface Me {
   app: string;
+  /** Opaque app/account view marker; never an authentication credential. */
+  signupView?: string;
   phoneMasked: string;
   membership: Membership | null;
   canJoin: boolean;
@@ -101,6 +105,8 @@ export interface Me {
 }
 
 export interface JoinBody {
+  /** The app/account whose fields the person reviewed; not a credential. */
+  signupView?: string;
   homeCity?: "nyc" | "sf";
   firstName: string;
   age: number;
@@ -184,6 +190,7 @@ export const MESSAGES: Record<ApiError, string> = {
   invalid_code: "That code is not right, or it has expired. Check the text and try again.",
   invalid: "Some details are missing or not valid. Check the fields and try again.",
   home_runtime_conflict: "This home change needs help from support to keep your conversation intact. Your home has not changed.",
+  account_changed: "Your account changed. Please check your details again.",
   under_age: "You must be 13 or older to join. We did not save your details.",
   invite_only: "You can join only with an invitation.",
   unauthorized: "Your session ended. Please log in again.",

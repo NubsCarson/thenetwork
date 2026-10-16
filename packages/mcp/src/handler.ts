@@ -6,7 +6,7 @@
 // Spec: MCP 2026-07-28 (Streamable HTTP, stateless, per-request _meta; initialize kept for 2025-03-26
 // to 2025-11-25 clients), OAuth 2.1 with PKCE S256, RFC 7591 (registration), RFC 8414 and RFC 9728
 // (metadata), RFC 8707 (resource), RFC 9207 (iss), RFC 7009 (revocation).
-import { devShortcutsAllowed, ipBucket, type Env } from "@thenetwork/platform";
+import { devShortcutsAllowed, ipBucket, signupAccountView, type Env } from "@thenetwork/platform";
 import { verifyProxyHeaders } from "@thenetwork/platform/src/proxy.ts";
 import { readCappedText } from "@thenetwork/platform/src/body.ts";
 import { defaultApps, defaultHostMap, type McpApp, type McpAppId, type Surface } from "./apps.ts";
@@ -161,6 +161,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
   }
   const store = o.store ?? new MemoryOAuthStore();
   const now = o.now ?? Date.now;
+  o.platform.setSignupAgeCleanup?.((key, app) => store.discardSignupDrafts(key, app, now()));
   const ttl = { ...TTL, ...o.ttl };
   const lim = { ...LIMITS, ...o.limits };
   const log = o.log ?? (s => console.log(s));
@@ -743,9 +744,9 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
           if (await limited(`status:grant:${auth.grant.id}`, lim.statusPerGrantMinute, 60_000)) return out(429, rpcError(id, -31029, "Too many requests"), { "retry-after": "60" });
           // A profile is a few messages a day at most (each one reaches the member's own app as a text).
           // Only a well-formed profile counts (a refused one never reaches the app).
-          if (tool === "submit_profile" && checkArgs(tool, params.arguments, [], host).ok && (await limited(`profile:grant:${auth.grant.id}`, PROFILES_PER_GRANT_DAY, 86_400_000))) return out(429, rpcError(id, -31029, "Too many profiles today"), { "retry-after": "3600" });
+          if ((tool === "submit_profile" || tool === "prepare_signup") && checkArgs(tool, params.arguments, [], host).ok && (await limited(`profile:grant:${auth.grant.id}`, PROFILES_PER_GRANT_DAY, 86_400_000))) return out(429, rpcError(id, -31029, "Too many profiles today"), { "retry-after": "3600" });
         }
-        const r = await callTool(tool, params.arguments, { apps, surface, host, hooks: o.platform, grant: auth?.grant ?? null, assistant: auth ? assistantOf(auth.client) : undefined });
+        const r = await callTool(tool, params.arguments, { apps, surface, host, hooks: o.platform, grant: auth?.grant ?? null, store, now: now(), assistant: auth ? assistantOf(auth.client) : undefined });
         log(`[mcp] ${host.id} ${surface} ${tool} ${r.kind}${auth ? ` grant=${auth.grant.id}` : ""}`);
         if (r.kind === "invalid_grant") {
           if (auth) await revokeGrant(auth.grant.id, now());
@@ -782,6 +783,31 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return mcp(c, o.surface ?? "full");
       case "/mcp/openai":
         return c.app.openai ? mcp(c, "openai") : json(404, { error: "not_found" });
+      case "/oauth/signup-draft":
+      case "/oauth/signup-draft/discard": {
+        if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+        // Same-origin session only. No draft IDs, phone or facts in URLs or request bodies.
+        if (!originOk(c) || (req.headers.get("origin") === null && req.headers.get("sec-fetch-site") !== "same-origin") || url.search) return json(403, { error: "not_allowed" });
+        if (!["ntwrk", "friends"].includes(c.app.id)) return json(404, { error: "not_found" });
+        const who = await o.platform.session?.(c.app.id, req);
+        if (!who) return json(401, { error: "sign_in_required" });
+        const key = o.platform.phoneKey(who.e164);
+        if (who.personId !== await o.platform.personForKey(key)) return json(403, { error: "not_allowed" });
+        if (p.endsWith("/discard")) {
+          const body = await readJson(req);
+          if (!body || body.signupView !== signupAccountView(c.app.id, key)) return json(403, { error: "not_allowed" });
+          await store.discardSignupDrafts(key, c.app.id, now());
+          return json(200, { discarded: true }, who.setCookie ? { "set-cookie": who.setCookie } : {});
+        }
+        if (!o.platform.withSignupAgePolicy || !o.platform.setSignupAgeCleanup) return json(403, { error: "not_allowed" });
+        return o.platform.withSignupAgePolicy(key, c.app.id, async allowed => {
+          if (who.personId !== null && !["not_joined", "invited"].includes(await o.platform.status(who.personId, c.app.id))) return json(403, { error: "not_allowed" });
+          const draft = allowed ? await store.claimSignupDraft(key, c.app.id, who.personId, now()) : undefined;
+          const response = json(200, { draft: draft ?? null, signupView: signupAccountView(c.app.id, key) }, { "cache-control": "no-store" });
+          if (who.setCookie) response.headers.append("set-cookie", who.setCookie);
+          return response;
+        });
+      }
       case "/oauth/register": {
         const res = await register(c);
         res.headers.set("access-control-allow-origin", "*");
