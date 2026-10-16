@@ -27,7 +27,6 @@ const htmlFiles = (s: Site) => readdirSync(out(s)).filter((f) => f.endsWith(".ht
 const OTHER_APP_DOMAINS = (s: Site) => SITES.filter((o) => o.app !== s.app && o.app !== "ntwrk").map((o) => o.domain);
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 // The text messaging terms are a section of the terms page on every site.
-const smsPage = (_: Site) => "terms.html";
 
 function consentWording(html: string): string {
   const m = html.match(/<span data-consent-wording[^>]*>([\s\S]*?)<\/span>/);
@@ -50,6 +49,15 @@ describe.each(SITES)("$domain", (s) => {
     expect(htmlFiles(s)).toEqual(expect.arrayContaining(need));
   });
 
+  test("members can reach phone sign-in from home and return to the existing text conversation", () => {
+    const header = read(s, "index.html").match(/<header[^>]*>([\s\S]*?)<\/header>/)?.[1] ?? "";
+    expect(header, s.domain).toMatch(/<a[^>]*href="\/settings"[^>]*>Sign in<\/a>/);
+    const account = read(s, "settings.html");
+    expect(account, s.domain).toContain(`href="sms:${TEXT_LINE}"`);
+    expect(account, s.domain).toContain("Open Messages");
+    expect(account, s.domain).toContain('<option value="" disabled>Select your home city</option>');
+  });
+
   test("every page has a title and the legal links", () => {
     for (const f of htmlFiles(s)) {
       const html = read(s, f);
@@ -66,12 +74,12 @@ describe.each(SITES)("$domain", (s) => {
     expect(wording).toContain("Reply STOP");
     expect(wording).toContain("HELP");
     expect(wording).toContain("Message and data rates may apply");
-    if (s.app !== "ntwrk") expect(text(read(s, smsPage(s)))).toContain(wording);
+    if (s.app !== "ntwrk") expect(text(read(s, "terms.html"))).toContain(wording);
   });
 
   test("privacy and SMS terms carry the 10DLC sentence", () => {
     expect(text(read(s, "privacy.html"))).toContain(TENDLC);
-    expect(text(read(s, smsPage(s)))).toContain(TENDLC);
+    expect(text(read(s, "terms.html"))).toContain(TENDLC);
   });
 
   test("the join page's consent wording is the platform's canonical text for this app", () => {
@@ -95,7 +103,7 @@ describe.each(SITES)("$domain", (s) => {
 
   test("STOP stops every app; 'leave <app>' stops one (PRD 40.3). No page says STOP ALL", () => {
     for (const f of htmlFiles(s)) expect(read(s, f), f).not.toContain("STOP ALL");
-    const sms = text(read(s, smsPage(s)));
+    const sms = text(read(s, "terms.html"));
     expect(sms).toMatch(/STOP to stop every text from our number/);
     expect(sms).toContain(s.app === "ntwrk" ? '"leave slop.date"' : `leave ${s.domain}`);
   });
@@ -251,7 +259,7 @@ test("staging builds keep the served entry, skills and signed router on configur
   } finally { server?.stop(true); backend.stop(true); }
 });
 
-test("landing pages: one line, the prompt field, a logo for every agent; nothing else", () => {
+test("landing pages keep agent onboarding and an accessible phone sign-in link", () => {
   for (const s of SITES) {
     const home = read(s, "index.html");
     const version = (Bun.YAML.parse(read(s, "SKILL.md").split("---")[1]!) as { metadata: { version: string } }).metadata.version;

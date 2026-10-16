@@ -47,6 +47,7 @@
   </section>
 
   <section data-step="account" hidden>
+    <p><a class="btn quiet" href="sms:{{TEXT_LINE}}">Open Messages</a></p>
     <h2>Your membership</h2>
     <dl class="facts">
       <dt>Phone</dt><dd data-slot="phoneMasked"></dd>
@@ -61,7 +62,7 @@
       <h3>Your home</h3>
       <p>Where you live, not a place you want to visit. This updates this app only.</p>
       <label for="home-city">Home city</label>
-      <select id="home-city" name="homeCity" required><option value="nyc">New York City</option><option value="sf">San Francisco Bay Area</option></select>
+      <select id="home-city" name="homeCity" required><option value="" disabled>Select your home city</option><option value="nyc">New York City</option><option value="sf">San Francisco Bay Area</option></select>
       <label for="home-neighborhood">Neighborhood or area (optional)</label>
       <input id="home-neighborhood" name="neighborhood" maxlength="80" autocomplete="address-level3">
       <p data-error role="alert" hidden></p>

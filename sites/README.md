@@ -27,7 +27,7 @@ Ages on the pages equal the platform registry (`packages/platform/src/apps.ts` `
 
 - `<site>/public/*.html`: one file per page (landing, join, settings, privacy, terms,
   guidelines, support, 404; slop also has `safety`). Each site has its own `styles.css`.
-  The SMS terms are a section of the terms page (`terms.html#sms`). The landing page links privacy and terms only.
+  The SMS terms are a section of the terms page (`terms.html#sms`). The landing page links to phone sign-in in its header and privacy and terms in its footer.
 - `<site>/static/`: files copied into `dist/` as they are (`robots.txt`; add `_redirects` or
   `.well-known/*` files here).
 - `skills/<name>/SKILL.md`: the Agent Skills file per site (`ntwrk-party`, `slop-date`, `peon-biz`,

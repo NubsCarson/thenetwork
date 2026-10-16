@@ -79,9 +79,9 @@ function render(root: HTMLElement, me: Me): void {
   when(root, "not-stopped", live && !stopped);
   when(root, "has-home", live && !!me.home);
   const homeForm = root.querySelector<HTMLFormElement>('form[data-form="home"]');
-  if (homeForm && me.home) {
-    homeForm.querySelector<HTMLSelectElement>('[name="homeCity"]')!.value = me.home.homeCity;
-    homeForm.querySelector<HTMLInputElement>('[name="neighborhood"]')!.value = me.home.neighborhood ?? "";
+  if (homeForm) {
+    homeForm.querySelector<HTMLSelectElement>('[name="homeCity"]')!.value = me.home?.homeCity ?? "";
+    homeForm.querySelector<HTMLInputElement>('[name="neighborhood"]')!.value = me.home?.neighborhood ?? "";
   }
   showStep(root, "account");
   // Parts of the page that need the account (the slop photos section, photos.ts) load on this event.
@@ -181,6 +181,7 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     setError(homeForm, "");
     const city = homeForm.querySelector<HTMLSelectElement>('[name="homeCity"]')!.value;
     const neighborhood = homeForm.querySelector<HTMLInputElement>('[name="neighborhood"]')!.value.trim();
+    if (!city) return setError(homeForm, "Choose your home city.");
     await busy(homeForm, async () => {
       const res = await api.home(city, neighborhood);
       if (!res.ok) return setError(homeForm, message(root, res.error));
