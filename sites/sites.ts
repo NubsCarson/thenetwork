@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { dirname, join, relative } from "node:path";
 import { mcpUrlFor, skillsConfig } from "./skills.config.ts";
 import { RESPONSE_STYLE } from "./skill-responses.ts";
-import { agentRow, messagesHref, promptFor } from "./agents.ts";
+import { agentRow, messagesHref, joinMessageFor, promptFor } from "./agents.ts";
 import { RUN_WORKER_FIRST } from "../deploy/router.ts";
 import { stagingSiteOrigins } from "../packages/platform/src/apps.ts";
 
@@ -221,14 +221,14 @@ export async function buildSite(s: Site, outdir: string, env: Record<string, str
     const version = (Bun.YAML.parse(skill.match(/^---\n([\s\S]*?)\n---/)![1]!) as { metadata: { version: string } }).metadata.version;
     writeFileSync(home, readFileSync(home, "utf8")
       .replace(/(<code data-prompt>)[\s\S]*?(<\/code>)/, (_all, open, close) => `${open}${promptFor(s, version)}${close}`)
-      .replaceAll("{{AGENTS}}", agentRow(s, skillsConfig(env).TEXT_LINE, version)));
+      .replaceAll("{{AGENTS}}", agentRow(s, version)));
     const problems: string[] = [];
     for (const f of walk(outdir)) {
       const full = join(outdir, f);
       if (statSync(full).size === 0) problems.push(`${f} is empty`);
       if (!TEXT.test(f)) continue;
       const before = readFileSync(full, "utf8");
-      const after = fill(before.replaceAll("{{MESSAGES_HREF}}", messagesHref(s, skillsConfig(env).TEXT_LINE)), env, s.domain);
+      const after = fill(before.replaceAll("{{MESSAGES_HREF}}", messagesHref(s, skillsConfig(env).TEXT_LINE)).replaceAll("{{TEXT_MESSAGE}}", joinMessageFor(s)), env, s.domain);
       if (after !== before) writeFileSync(full, after);
       if (after.includes("{{")) problems.push(`${f} has an unfilled {{placeholder}}`);
       if (env.DEPLOY_TARGET === "production" && f.endsWith(".html")) {

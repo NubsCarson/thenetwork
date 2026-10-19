@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { verifyProxyHeaders } from "../../packages/platform/src/proxy.ts";
 import { APPS, keywordApp } from "../../packages/platform/src/apps.ts";
-import { AGENTS, keywordFor, promptFor } from "../agents.ts";
+import { AGENTS, keywordFor, joinMessageFor, promptFor } from "../agents.ts";
 import { TEXT_LINE } from "../skills.config.ts";
 import { device } from "../shared/agent.ts";
 import { SITES, buildSite, walk, type Site } from "../sites.ts";
@@ -53,7 +53,7 @@ describe.each(SITES)("$domain", (s) => {
     const header = read(s, "index.html").match(/<header[^>]*>([\s\S]*?)<\/header>/)?.[1] ?? "";
     expect(header, s.domain).toMatch(/<a[^>]*href="\/settings"[^>]*>Sign in<\/a>/);
     const account = read(s, "settings.html");
-    expect(account, s.domain).toContain(`href="sms:${TEXT_LINE}?&amp;body=${encodeURIComponent(keywordFor(s))}"`);
+    expect(account, s.domain).toContain(`href="sms:${TEXT_LINE}?body=${encodeURIComponent(joinMessageFor(s))}"`);
     expect(account, s.domain).toContain("Open Messages");
     expect(account, s.domain).toContain('<option value="" disabled>Select your home city</option>');
   });
@@ -280,7 +280,11 @@ test("landing pages keep agent onboarding and an accessible phone sign-in link",
       expect(tile.includes('data-only="desktop"'), `${s.domain} ${a.id}`).toBe(Boolean(a.desktopOnly));
     }
     // Joining by text: the shared line with this app's keyword, which the line routes to this app.
-    expect(row, s.domain).toContain(`href="sms:${TEXT_LINE}?&amp;body=${keywordFor(s)}"`);
+    expect(row, s.domain).not.toContain("sms:");
+    expect(home, s.domain).toContain(`href="sms:${TEXT_LINE}?body=${encodeURIComponent(joinMessageFor(s))}"`);
+    expect(home, s.domain).toContain('data-text-eliza>Text Eliza</a>');
+    expect(home, s.domain).toContain(`<code data-text-message>${joinMessageFor(s)}</code>`);
+    expect(keywordApp(joinMessageFor(s)), s.domain).toBe(s.app);
     expect(keywordApp(keywordFor(s)), s.domain).toBe(s.app);
     // No eyebrow, safety notice, explanation, city or sibling brand; legal pages in the footer.
     expect(text(home), s.domain).not.toMatch(/background check|safety notice|How it works|What you get|powered by|New York|San Francisco/i);
