@@ -8,7 +8,7 @@ metadata:
   site: https://slop.date
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.4"
+  version: "1.1.5"
 ---
 
 # slop.date
