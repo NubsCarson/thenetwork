@@ -19,6 +19,8 @@ test('staging authority keeps signed HTTP API and OAuth on its configured app or
   const person=(await st.svc.publicApi.accounts.personFor(phone))!;
   const allowedHosts:string[][]=[];
   const api=createPublicApi({store:st.svc.people,env,hashKey:'dev-only-platform-hash-key',now:()=>st.clock.now(),otp:st.otp,turnstile:{verify:async(_token,_ip,hosts)=>{allowedHosts.push([...(hosts??[])]);return hosts?.includes(new URL(origin).hostname)??false}},minStartMs:0,minVerifyMs:0});
+  // The mounted API and MCP must share the staged cookie namespace and session owner.
+  Object.defineProperty(st.svc,'publicApi',{value:api,configurable:true});
   mcp=await createServiceMcp(st.svc,{env:{...env,MCP_CUSTOM_CHATGPT_SLOP:'on',MCP_CUSTOM_CHATGPT_SLOP_PERSON_IDS:person.id},databaseUrl:st.url,migrate:false,now:()=>st.clock.now(),log:()=>{}});
   server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
    const edge=await normalizeEdge(req,secret,config.hostMap,st.clock.now());
