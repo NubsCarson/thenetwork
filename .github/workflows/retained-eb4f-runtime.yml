@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - name: Verify exact reviewed helper bytes
         env:
-          EXPECTED_PINS_SHA256: 77aaa333f44c78a3af2e34ceb1e66a82838c41eba87e4513c4dde58d6e0b0bf6
+          EXPECTED_PINS_SHA256: f34d5cb2b4f642771519d098efc202dabc3264ac32f86538bdbda01fb14f5ba4
         run: |
           python3 - <<'PY'
           from pathlib import Path

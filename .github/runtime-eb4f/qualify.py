@@ -19,12 +19,12 @@ def save(name,value,final=False):
     with (OUT/name).open('xb') as f:f.write(data)
     written+=len(data)
 def birth(pid):return (Path('/proc')/str(pid)/'stat').read_text().rsplit(') ',1)[1].split()[19]
-def run(args,limit=20,allowed=(0,),cleanup=False):
+def run(args,limit=20,allowed=(0,),cleanup=False,capture_limit=None):
     global seq,unknown
     assert not unknown,'UNKNOWN_CLIENT_NO_NEW_COMMAND'
     end_limit=observe_end if cleanup else work_end
     assert time.monotonic()<end_limit,'NO_NEW_STAGE_AFTER_DEADLINE'
-    seq+=1;capture=min(COMMAND_CAPTURE,max(0,(MAX_RECEIPTS-written-2097152)//6))
+    seq+=1;capture=min(COMMAND_CAPTURE if capture_limit is None else min(COMMAND_CAPTURE,capture_limit),max(0,(MAX_RECEIPTS-written-2097152)//6))
     assert capture>=1024,'COMMAND_CAPTURE_BUDGET'
     p=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=ENV)
     record={'argv':args,'pid':p.pid,'started':time.time(),'reaped':False,'signals':0,'retries':0,'captureCombinedBytes':capture}
@@ -72,12 +72,16 @@ def kernel_witness(name,row):
 
 def start(name,image,env=None,args=None):
     mem=536870912 if name=='pg' else 1610612736;cpu=50000 if name=='pg' else 100000
-    cmd=['docker','create','--name','network-eb4f-runtime-'+name,'--network','none' if name=='pg' else 'container:'+containers['pg']['cid'],'--cpus','.5' if name=='pg' else '1','--memory',str(mem),'--memory-swap',str(mem),'--pids-limit','128','--log-driver','local','--log-opt','max-size=256k','--log-opt','max-file=1']
+    cmd=['docker','create','--name','network-eb4f-runtime-'+name,'--network','none' if name=='pg' else 'container:'+containers['pg']['cid'],'--cpus','.5' if name=='pg' else '1','--memory',str(mem),'--memory-swap',str(mem),'--pids-limit','128','--log-driver','local','--log-opt','max-size=256k','--log-opt','max-file=1','--log-opt','compress=false']
     if name=='pg':cmd+=['--tmpfs','/var/lib/postgresql/data:rw,size=512m','--tmpfs','/var/run/postgresql:rw,size=8m']
     else:cmd+=['--read-only','--tmpfs','/tmp:rw,size=64m','--mount','type=bind,src='+str(ROOT)+',dst=/qualification,readonly','--mount','type=bind,src='+str(CONTROL)+',dst=/control,readonly']
     for k,v in (env or {}).items():cmd+=['--env',k+'='+v]
     cmd+=[image]+(args or []);cid=run(cmd)[0].decode().strip();assert re.fullmatch('[0-9a-f]{64}',cid)
     containers[name]={'cid':cid,'image':image,'memory':mem,'cpuQuota':cpu}
+    created=inspect(cid)
+    assert created['Id']==cid and created['Image']==image and created['Name']=='/network-eb4f-runtime-'+name,'EXACT_CREATED_CONTAINER_IDENTITY'
+    containers[name].update(created=created['Created'],name=created['Name'])
+    save('created-'+name+'.json',{'Id':cid,'Image':image,'Created':created['Created'],'Name':created['Name'],'State':created['State'],'HostConfig':{k:created['HostConfig'].get(k) for k in ['NanoCpus','Memory','MemorySwap','PidsLimit','LogConfig','NetworkMode','ReadonlyRootfs']}})
     run(['docker','start',cid]);row=inspect(cid);kernel_witness(name,row);return cid
 
 def wait_exit(name,seconds,cleanup=False):
@@ -90,6 +94,34 @@ def wait_exit(name,seconds,cleanup=False):
         kernel_witness(name,row);time.sleep(.25)
     raise RuntimeError('CONTAINER_SURVIVOR_NO_FORCED_STOP')
 
+def capture_owned_failure_evidence():
+    evidence={'state':'READ_ONLY_FAILURE_EVIDENCE','containers':[],'skipped':None}
+    if unknown or time.monotonic()>=observe_end:
+        evidence['skipped']='UNKNOWN_CLIENT_OR_OBSERVER_EXPIRED';return evidence
+    for name,spec in list(containers.items()):
+        if unknown or time.monotonic()>=observe_end or MAX_RECEIPTS-written<2097152:
+            evidence['skipped']='UNKNOWN_DEADLINE_OR_RECEIPT_BUDGET';break
+        item={'name':name,'container':spec['cid'],'expectedImage':spec['image']};evidence['containers'].append(item)
+        try:
+            raw,_=run(['docker','inspect',spec['cid']],limit=4,cleanup=True,capture_limit=16384)
+            item['inspectCommandReceipt']='command-%03d.json'%seq
+            row=json.loads(raw)[0]
+            assert row['Id']==spec['cid'] and row['Image']==spec['image'],'FAILURE_INSPECT_EXACT_ID_IMAGE'
+            assert not spec.get('created') or row['Created']==spec['created'],'FAILURE_INSPECT_CREATED'
+            assert not spec.get('name') or row['Name']==spec['name'],'FAILURE_INSPECT_NAME'
+            item.update(identityVerified=True,created=row['Created'],actualState=row['State'])
+        except BaseException as error:
+            item['inspectError']=type(error).__name__+':'+str(error)[:256];continue
+        if unknown or time.monotonic()>=observe_end:
+            item['logsSkipped']='UNKNOWN_CLIENT_OR_OBSERVER_EXPIRED';break
+        try:
+            item['logsCommandReceipt']='command-%03d.json'%(seq+1)
+            run(['docker','logs','--tail','80','--timestamps',spec['cid']],limit=4,allowed=(0,1),cleanup=True,capture_limit=16384)
+        except BaseException as error:
+            # run() persisted byte counts, bounded stdout/stderr and truncation before raising.
+            item['logsError']=type(error).__name__+':'+str(error)[:256]
+    return evidence
+
 outcome={'passed':False,'productionActions':0,'realData':0,'providerCalls':0,'controllerWorkSeconds':WORK_SECONDS,'controllerObservationSeconds':OBSERVE_SECONDS,'runnerTimeoutMinutes':20}
 try:
     archive=ROOT/'artifact/backend.oci.tar';assert archive.stat().st_size==75333120
@@ -100,6 +132,7 @@ try:
         assert time.monotonic()<work_end,'CONVERSION_FINITE_DEADLINE'
     free=os.statvfs(ROOT);assert free.f_bavail*free.f_frsize>=6442450944,'HOSTED_IMPORT_FOOTPRINT_FLOOR_6GIB'
     compatible,conversionReceipt=convert(archive,ROOT/'converted-image',expected,conversion_guard)
+    assert conversionReceipt['dockerArchiveBytes']==190402560 and conversionReceipt['dockerArchiveSHA256']=='0f4b41f3effbdc4ea5c02eb66d299218a3fbbfaeec24b961c173ff560c78099c','ACCEPTED_DETERMINISTIC_REPRESENTATION_BYTES'
     save('SAME-IMAGE-REPRESENTATION.json',conversionReceipt)
     free=os.statvfs(ROOT);assert free.f_bavail*free.f_frsize>=2147483648+201326592+536870912+1073741824+612368384,'REMAINING_LOADER_IMAGE_PG_WRITE_FLOOR'
     run(['docker','load','--input',str(compatible)],120)
@@ -131,6 +164,10 @@ try:
 except BaseException as error:
     outcome.update(state='HOLD_NO_RETRY_RUNTIME_UNQUALIFIED',error=type(error).__name__,reason=str(error)[:512])
 finally:
+    if not outcome['passed']:
+        # Preserve primary error unmodified. Diagnostic failures cannot turn it into a new cause.
+        try:outcome['failureEvidence']=capture_owned_failure_evidence()
+        except BaseException as diagnosticError:outcome['failureEvidence']={'diagnosticError':type(diagnosticError).__name__+':'+str(diagnosticError)[:256]}
     outcome.update(containers=containers,clientCustody=[{k:c.get(k) for k in ['pid','birth','started','returncode','reaped','signals','retries','bytes','retainedBytes','truncated','deadlineExceeded']} for c in clients],oneAppSigtermIDs=list(stops),unknownClient=unknown,forcedStops=0,removals=0,retries=0,controllerElapsedSeconds=time.monotonic()-started,closureClaim='PASS only for explicitly recorded terminal containers; failures retain IDs and rely on disclosed disposable hosted runner teardown, not graceful-closure acceptance')
     save('RESULT.json',outcome,final=True)
 raise SystemExit(0 if outcome['passed'] else 1)
