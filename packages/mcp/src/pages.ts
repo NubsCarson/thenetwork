@@ -2,7 +2,7 @@
 // Plain server-rendered HTML forms, no script except Cloudflare Turnstile when it is configured.
 // Every string from a client (its name, its redirect host) is escaped and labelled as the client's claim.
 import type { McpApp } from "./apps.ts";
-import type { Grant } from "./store.ts";
+import type { Grant, Scope } from "./store.ts";
 import { esc } from "./util.ts";
 
 // Same marks as the four homepage headers.
@@ -65,6 +65,23 @@ ${err(o.error)}
 <button type="submit">Continue</button>
 </form>
 <form method="post" action="/oauth/authorize/cancel">${hidden(rid)}<button class="secondary" name="decision" value="deny">Cancel</button></form>`, { status: o.error ? 400 : 200 });
+}
+
+const SCOPE_TEXT: Record<Scope, string> = {
+  "apps:read": "See which Network apps are available",
+  "membership:read": "Read your membership status and new updates",
+  "profile:write": "Save your profile and prepare signup details",
+};
+
+/** One pending OAuth connection, not an account page or a sign-in destination. */
+export function consentPage(app: McpApp, rid: string, clientName: string | null, redirectHost: string, scopes: Scope[]) {
+  return page(app, "Allow access", `<h1>Allow this assistant?</h1>
+<p><strong>${esc(clientName ?? "An unnamed assistant")}</strong> (the name it provided)</p>
+<p class="muted">Return to ${esc(redirectHost)}.</p>
+<div class="box"><p>It will be able to:</p><ul>${scopes.map(s => `<li>${esc(SCOPE_TEXT[s])}</li>`).join("")}</ul></div>
+<form method="post" action="/oauth/authorize/consent">${hidden(rid)}
+<div class="row"><button name="decision" value="approve">Allow</button><button class="secondary" name="decision" value="deny">Don't allow</button></div>
+</form>`);
 }
 
 export function messagePage(app: McpApp, title: string, text: string, status = 400) {

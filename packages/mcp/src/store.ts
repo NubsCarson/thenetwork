@@ -110,6 +110,8 @@ export interface OAuthStore {
   putAuthRequest(r: AuthRequest): Promise<void>;
   getAuthRequest(id: string): Promise<AuthRequest | undefined>;
   updateAuthRequest(id: string, patch: Partial<Pick<AuthRequest, "e164" | "personId" | "step">>): Promise<void>;
+  /** Atomically consume one unexpired, phone-verified client approval. */
+  takeConsentRequest(id: string, at: number): Promise<AuthRequest | undefined>;
   deleteAuthRequest(id: string): Promise<void>;
 
   putGrant(g: Grant): Promise<void>;
@@ -190,6 +192,12 @@ export class MemoryOAuthStore implements OAuthStore {
   async updateAuthRequest(id: string, patch: Partial<Pick<AuthRequest, "e164" | "personId" | "step">>) {
     const r = this.requests.get(id);
     if (r) Object.assign(r, patch);
+  }
+  async takeConsentRequest(id: string, at: number) {
+    const r = this.requests.get(id);
+    if (!r || r.step !== "consent" || !r.e164 || r.expiresAt <= at) return undefined;
+    this.requests.delete(id);
+    return structuredClone(r);
   }
   async deleteAuthRequest(id: string) { this.requests.delete(id); }
 

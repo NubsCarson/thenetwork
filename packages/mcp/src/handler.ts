@@ -11,7 +11,7 @@ import { verifyProxyHeaders } from "@thenetwork/platform/src/proxy.ts";
 import { readCappedText } from "@thenetwork/platform/src/body.ts";
 import { defaultApps, defaultHostMap, type McpApp, type McpAppId, type Surface } from "./apps.ts";
 import type { AssistantKind, PlatformHooks, SignedIn } from "./hooks.ts";
-import { codePage, consentsPage, messagePage, phonePage } from "./pages.ts";
+import { codePage, consentPage, consentsPage, messagePage, phonePage } from "./pages.ts";
 import { MemoryOAuthStore, type AuthCode, type AuthRequest, type ClientAuthMethod, type Grant, type OAuthClient, type OAuthStore, type Scope, SCOPES, type Token } from "./store.ts";
 import { callTool, checkArgs, INSTRUCTIONS, TOOL_NAMES, TOOL_SCOPE, type ToolName, toolDefs } from "./tools.ts";
 import { cookieValue, isLoopbackHost, json, pkceS256, randomId, randomToken, readForm, readJson, safeEqual, sha256hex, validChallenge, validVerifier } from "./util.ts";
@@ -397,8 +397,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return messagePage(c.app, "Not available", "This account cannot use this assistant connection.", 403);
       }
       if (signedIn.setCookie) cookieOut.push(signedIn.setCookie);
-      res = await finishAuthorization(c, { ...r, e164: signedIn.e164, personId: signedIn.personId }, client);
-      cookieOut.shift();
+      await store.updateAuthRequest(r.id, { e164: signedIn.e164, personId: signedIn.personId, step: "consent" });
+      res = consentPage(c.app, r.id, client.name, redirectHost, r.scopes);
     } else {
       res = phonePage(c.app, r.id, client.name, redirectHost, { turnstileSiteKey: o.turnstile?.siteKey });
     }
@@ -416,7 +416,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     return client ? { r, client } : undefined;
   }
 
-  async function authorizeStep(c: Ctx, step: "phone" | "code" | "cancel"): Promise<Response> {
+  async function authorizeStep(c: Ctx, step: "phone" | "code" | "consent" | "cancel"): Promise<Response> {
     if (c.req.method !== "POST") return json(405, { error: "method_not_allowed" }, { allow: "POST" });
     if (!originOk(c)) return messagePage(c.app, "Not allowed", "This form must be sent from this site.", 403);
     const form = await readForm(c.req);
@@ -457,10 +457,33 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         res.headers.append("set-cookie", clearCookie);
         return res;
       }
-      const res = await finishAuthorization(c, { ...r, e164: r.e164, personId: who.personId }, client);
+      await store.updateAuthRequest(r.id, { personId: who.personId, step: "consent" });
+      const res = consentPage(c.app, r.id, client.name, redirectHost, r.scopes);
       const site = o.platform.createSession ? await o.platform.createSession(c.app.id, { e164: r.e164, personId: who.personId }) : undefined;
       if (site) res.headers.append("set-cookie", site);
       return res;
+    }
+
+    if (step === "consent") {
+      if (r.step !== "consent" || !r.e164) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
+      if (form.get("decision") === "approve") {
+        // A verified phone/session is identity, not permission. Only this bound POST approves access.
+        const current = o.platform.session ? await o.platform.session(c.app.id, c.req) : undefined;
+        const owner = await o.platform.login(r.e164);
+        if ((o.platform.session && (!current || current.personId !== r.personId || current.e164 !== r.e164))
+          || owner === "held" || owner.personId !== r.personId
+          || !(await customSlopEligible(c, client, r.personId, o.platform.phoneKey(r.e164)))) {
+          await store.deleteAuthRequest(r.id);
+          const response = messagePage(c.app, "Connect again", "Your account changed. Go back to your assistant and connect again.", 403);
+          response.headers.append("set-cookie", clearCookie);
+          return response;
+        }
+        const approved = await store.takeConsentRequest(r.id, now());
+        if (!approved?.e164) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
+        const response = await finishAuthorization(c, { ...approved, e164: approved.e164 }, client);
+        if (current?.setCookie) response.headers.append("set-cookie", current.setCookie);
+        return response;
+      }
     }
 
     await store.deleteAuthRequest(r.id);
@@ -468,17 +491,17 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     return redirectTo(r.redirectUri, { error: "access_denied", error_description: "Connection cancelled", state: r.state, iss: c.issuer }, 303, { "set-cookie": clearCookie });
   }
 
-  /** Phone ownership is the final step; issue only the validated request's scoped access. */
+  /** Issue only after the browser explicitly approves this request's client and scopes. */
   async function finishAuthorization(c: Ctx, r: AuthRequest & { e164: string }, client: OAuthClient): Promise<Response> {
     const clearCookie = `${browserCookie(c.app)}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookies(c.app) ? "; Secure" : ""}`;
     const at = now();
+    if (r.expiresAt <= at) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
     const grant: Grant = { id: `grant_${randomId()}`, clientId: client.id, app: c.app.id, phoneKey: o.platform.phoneKey(r.e164), personId: r.personId, scopes: r.scopes, resource: r.resource, createdAt: at, expiresAt: at + ttl.grantMs, revokedAt: null };
     await store.putGrant(grant);
     await linked(grant, true);
     const code = randomToken("ntwc_");
     const ac: AuthCode = { hash: sha256hex(code), grantId: grant.id, clientId: client.id, redirectUri: r.redirectUri, codeChallenge: r.codeChallenge, resource: r.resource, scopes: r.scopes, createdAt: at, expiresAt: at + ttl.codeMs, usedAt: null };
     await store.putCode(ac);
-    await store.deleteAuthRequest(r.id);
     await store.audit({ at, kind: "consent_granted", clientId: client.id, grantId: grant.id, app: c.app.id, detail: r.scopes.join(" ") });
     await store.audit({ at, kind: "code_issued", clientId: client.id, grantId: grant.id, app: c.app.id, detail: null });
     return redirectTo(r.redirectUri, { code, state: r.state, iss: c.issuer }, 303, { "set-cookie": clearCookie });
@@ -811,6 +834,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return authorizeStep(c, "phone");
       case "/oauth/authorize/code":
         return authorizeStep(c, "code");
+      case "/oauth/authorize/consent":
+        return authorizeStep(c, "consent");
       case "/oauth/authorize/cancel":
         return authorizeStep(c, "cancel");
       case "/oauth/token": {

@@ -106,6 +106,12 @@ export class PgOAuthStore implements OAuthStore {
     const n = { ...cur, ...patch };
     await this.sql`update oauth.auth_requests set e164 = ${n.e164}, person_id = ${n.personId}, step = ${n.step} where id = ${id}`;
   }
+  async takeConsentRequest(id: string, at: number) {
+    const [r] = await this.sql`delete from oauth.auth_requests
+      where id = ${id} and step = 'consent' and e164 is not null and expires_at > ${ts(at)}
+      returning *`;
+    return r ? request(r) : undefined;
+  }
   async deleteAuthRequest(id: string) { await this.sql`delete from oauth.auth_requests where id = ${id}`; }
 
   async putGrant(g: Grant) {

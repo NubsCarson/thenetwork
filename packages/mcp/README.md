@@ -15,7 +15,7 @@ Each site's Worker forwards `/mcp`, `/oauth/*` and `/.well-known/oauth-*` to the
 | `GET /.well-known/oauth-protected-resource[/mcp[/openai]]` | RFC 9728 metadata. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata. The issuer is the site origin. |
 | `POST /oauth/register` | RFC 7591 dynamic client registration. |
-| `GET /oauth/authorize`, `POST /oauth/authorize/{phone,code,cancel}` | Phone verification, automatic scoped access and cancellation. |
+| `GET /oauth/authorize`, `POST /oauth/authorize/{phone,code,consent,cancel}` | Phone verification, explicit client/scope approval and cancellation. |
 | `POST /oauth/token`, `POST /oauth/revoke` | Tokens (authorization code with PKCE S256, refresh with rotation) and RFC 7009 revocation. |
 | `GET /oauth/consents`, `POST /oauth/consents/revoke` | The person's list of connected assistants. The person can remove each one. |
 
@@ -135,6 +135,8 @@ bun run plugins/build.ts --check                               # the plugin skil
 
 The dev server binds to 127.0.0.1 only. Use 555-01xx numbers only.
 
-Assistant connections return directly after phone verification (or an existing valid session).
-No separate permission screen is shown. The requested scopes still limit access;
+After phone verification (or an existing valid session), the person approves the
+requesting client and its scopes before returning to the assistant. Every fresh
+authorization requires this decision; existing tokens remain valid. Approval is
+POST-only, bound to the browser and current account, and consumed atomically. The requested scopes still limit access;
 `/oauth/consents` lists connected assistants and lets the person revoke them.

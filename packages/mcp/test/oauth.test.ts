@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import type { PeopleStore } from "@thenetwork/platform";
 import { signProxyHeaders } from "@thenetwork/platform/src/proxy.ts";
 import { redirectUriAllowed } from "../src/handler.ts";
-import { CLIENT_UNUSED_MS, GRANT_KEEP_MS, MemoryOAuthStore } from "../src/store.ts";
-import { addMember, browserFlow, call, CHALLENGE, connect, origin, PHONE_A, PHONE_B, register, rpc, setup, tokenRequest, VERIFIER } from "./harness.ts";
+import { CLIENT_UNUSED_MS, GRANT_KEEP_MS, MemoryOAuthStore, type Grant } from "../src/store.ts";
+import { addMember, browserFlow, call, CHALLENGE, connect, origin, PHONE_A, PHONE_B, register, rpc, setup, tokenRequest, VERIFIER, type Env } from "./harness.ts";
 
 const SLOP = "slop.date", PEON = "peon.biz", NTWRK = "ntwrk.party";
 
@@ -127,8 +127,8 @@ describe("authorization code with PKCE", () => {
     const bad = await post("/oauth/authorize/code", { code: "999999" });
     expect(bad.status).toBe(400);
     expect(await bad.text()).toContain("did not work");
-    // The removed approval endpoint cannot bypass phone verification.
-    expect((await post("/oauth/authorize/consent", { decision: "approve" })).status).toBe(404);
+    // Approval cannot bypass phone verification.
+    expect((await post("/oauth/authorize/consent", { decision: "approve" })).status).toBe(400);
     // Cancellation before signing in never grants access.
     const deny = await post("/oauth/authorize/cancel", {});
     expect(new URL(deny.headers.get("location")!).searchParams.get("error")).toBe("access_denied");
@@ -465,5 +465,154 @@ describe("a grant made before the number had a person (audit: null-person grant)
     const again = await connect(env, PEON, PHONE_A);
     const fresh = await call(env, `${origin(PEON)}/mcp`, "check_status", {}, { token: again.token.access_token });
     expect(fresh.body!.result.structuredContent.status).toBe("active");
+  });
+});
+
+describe("explicit client approval boundary", () => {
+  const DOMAIN = "peon.biz";
+  const BASE = origin(DOMAIN);
+  const SCOPES = "membership:read profile:write";
+  async function member(env: Env, phone = PHONE_A) {
+    const personId = await addMember(env, phone, [{ app: "peon", state: "active" }]);
+    const { token } = await env.sessions.create("peon", phone, personId);
+    return { personId, cookie: `sid_peon=${token}` };
+  }
+  async function begin(env: Env, clientId: string, site = "", scope = SCOPES) {
+    const query = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: "https://client.example/callback", code_challenge: CHALLENGE, code_challenge_method: "S256", scope, state: "connection-state" });
+    const response = await env.fetch(new Request(`${BASE}/oauth/authorize?${query}`, { headers: { cookie: site } }));
+    const html = await response.text();
+    const browser = /((?:__Host-)?mcp_auth=[^;]+)/.exec(response.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    const rid = /name="rid" value="([^"]+)"/.exec(html)?.[1] ?? "";
+    return { response, html, rid, cookie: [browser, site].filter(Boolean).join("; ") };
+  }
+  function post(env: Env, path: string, rid: string, cookie: string, form: Record<string, string>, from = BASE) {
+    return env.fetch(new Request(BASE + path, { method: "POST", headers: { cookie, origin: from, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ rid, ...form }) }));
+  }
+  function noIssuedAccess(env: Env, grants = 0) {
+    const store = env.store as MemoryOAuthStore;
+    expect(store.grants.size).toBe(grants);
+    expect(store.codes.size).toBe(0);
+    expect(store.rows.filter(r => r.kind === "consent_granted" || r.kind === "code_issued")).toHaveLength(0);
+  }
+  async function priorApproval(env: Env, clientId: string, personId: string, scopes: Grant["scopes"]) {
+    const grant: Grant = { id: "grant_existing_approval", clientId, app: "peon", phoneKey: env.accounts.phoneHash(PHONE_A), personId, scopes, resource: `${BASE}/mcp`, createdAt: env.clock.t, expiresAt: env.clock.t + 86_400_000, revokedAt: null };
+    await env.store.putGrant(grant);
+    return grant;
+  }
+
+  test("a new DCR client cannot turn a signed-in browser GET into a grant or code", async () => {
+    let links = 0;
+    const env = setup({ assistantLinked: async () => { links++; } });
+    const who = await member(env);
+    const client = await register(env, DOMAIN, { client_name: '<img src=x onerror="alert(1)">' });
+    const request = await begin(env, client.body.client_id, who.cookie);
+    expect(request.response.status).toBe(200);
+    expect(request.response.headers.has("location")).toBe(false);
+    expect(request.html).toContain('/oauth/authorize/consent');
+    expect(request.html).toContain('client.example');
+    expect(request.html).toContain('&lt;img');
+    expect(request.html).not.toContain('<img src=x');
+    expect(request.response.headers.get("cache-control")).toBe("no-store");
+    noIssuedAccess(env);
+    expect(links).toBe(0);
+    expect(env.provider.sent).toHaveLength(0);
+  });
+
+  test("expanded scopes require an explicit decision and cannot mutate the older grant", async () => {
+    const env = setup(); const who = await member(env); const client = await register(env, DOMAIN);
+    const old = await priorApproval(env, client.body.client_id, who.personId, ["membership:read"]);
+    const request = await begin(env, client.body.client_id, who.cookie);
+    expect(request.response.status).toBe(200);
+    noIssuedAccess(env, 1);
+    expect(await env.store.getGrant(old.id)).toEqual(old);
+    const approved = await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve", scope: "apps:read", client_id: "forged", resource: "https://other.example/mcp" });
+    expect(approved.status).toBe(303);
+    const location = new URL(approved.headers.get("location")!);
+    expect(location.origin).toBe("https://client.example");
+    expect(location.searchParams.get("state")).toBe("connection-state");
+    const exchanged = await tokenRequest(env, DOMAIN, { grant_type: "authorization_code", code: location.searchParams.get("code")!, client_id: client.body.client_id, redirect_uri: "https://client.example/callback", code_verifier: VERIFIER });
+    expect(exchanged.res.status).toBe(200);
+    expect(exchanged.body.scope).toBe(SCOPES);
+    expect(await env.store.getGrant(old.id)).toEqual(old);
+  });
+
+  test("a previously approved client still needs a decision for a fresh request", async () => {
+    const env = setup(); const who = await member(env); const client = await register(env, DOMAIN);
+    const old = await priorApproval(env, client.body.client_id, who.personId, ["membership:read", "profile:write"]);
+    const request = await begin(env, client.body.client_id, who.cookie);
+    expect(request.response.status).toBe(200);
+    expect(request.html).toContain('/oauth/authorize/consent');
+    noIssuedAccess(env, 1);
+    expect(await env.store.getGrant(old.id)).toEqual(old);
+  });
+
+  test("a valid phone code proves ownership, not permission for the requesting client", async () => {
+    const env = setup(); const client = await register(env, DOMAIN); const request = await begin(env, client.body.client_id);
+    expect((await post(env, "/oauth/authorize/phone", request.rid, request.cookie, { phone: PHONE_A })).status).toBe(200);
+    const verified = await post(env, "/oauth/authorize/code", request.rid, request.cookie, { code: env.provider.last(PHONE_A)! });
+    expect(verified.status).toBe(200);
+    expect(verified.headers.has("location")).toBe(false);
+    expect(await verified.text()).toContain('/oauth/authorize/consent');
+    noIssuedAccess(env);
+  });
+
+  test("approval remains POST-only, same-origin, request-cookie bound and single-use", async () => {
+    const env = setup(); const who = await member(env); const client = await register(env, DOMAIN); const request = await begin(env, client.body.client_id, who.cookie);
+    expect((await env.fetch(new Request(`${BASE}/oauth/authorize/consent`))).status).toBe(405);
+    expect((await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve" }, "https://other.example")).status).toBe(403);
+    expect((await post(env, "/oauth/authorize/consent", request.rid, who.cookie, { decision: "approve" })).status).toBe(400);
+    noIssuedAccess(env);
+    expect((await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve" })).status).toBe(303);
+    expect((await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve" })).status).toBe(400);
+    expect((env.store as MemoryOAuthStore).grants.size).toBe(1);
+  });
+
+  test("concurrent approvals issue only one grant and one code", async () => {
+    const env = setup(); const who = await member(env); const client = await register(env, DOMAIN);
+    const request = await begin(env, client.body.client_id, who.cookie);
+    const responses = await Promise.all([1, 2].map(() => post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve" })));
+    expect(responses.map(r => r.status).sort()).toEqual([303, 400]);
+    const store = env.store as MemoryOAuthStore;
+    expect(store.grants.size).toBe(1);
+    expect(store.codes.size).toBe(1);
+    expect(store.rows.filter(r => r.kind === "consent_granted")).toHaveLength(1);
+  });
+
+  test("an approval expiring during storage consumption cannot issue access", async () => {
+    const env = setup(); const who = await member(env); const client = await register(env, DOMAIN);
+    const request = await begin(env, client.body.client_id, who.cookie);
+    const take = env.store.takeConsentRequest.bind(env.store);
+    env.store.takeConsentRequest = async (id, at) => {
+      const result = await take(id, at);
+      if (result) env.clock.t = result.expiresAt;
+      return result;
+    };
+    expect((await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve" })).status).toBe(400);
+    noIssuedAccess(env);
+  });
+
+  test("switching the signed-in account cannot approve the earlier account's request", async () => {
+    const env = setup(); const who = await member(env); const other = await member(env, PHONE_B); const client = await register(env, DOMAIN); const request = await begin(env, client.body.client_id, who.cookie);
+    const switched = request.cookie.replace(who.cookie, other.cookie);
+    expect((await post(env, "/oauth/authorize/consent", request.rid, switched, { decision: "approve" })).status).toBe(403);
+    noIssuedAccess(env);
+  });
+
+  test("denying a fresh request preserves the already approved access and refresh tokens", async () => {
+    const env = setup(); await member(env);
+    const connection = await connect(env, DOMAIN, PHONE_A, { scope: "membership:read" });
+    const site = /sid_peon=[^;]+/.exec(connection.flow.siteCookie!)![0];
+    const old = [...(env.store as MemoryOAuthStore).grants.values()].find(g => g.clientId === connection.client.client_id)!;
+    expect(old).toBeDefined();
+    const request = await begin(env, connection.client.client_id, site);
+    expect(request.response.status).toBe(200);
+    const denied = await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "deny" });
+    expect(new URL(denied.headers.get("location")!).searchParams.get("error")).toBe("access_denied");
+    expect(await env.store.getGrant(old.id)).toEqual(old);
+    expect((await call(env, `${BASE}/mcp`, "check_status", {}, { token: connection.token.access_token })).res.status).toBe(200);
+    const refresh = await tokenRequest(env, DOMAIN, { grant_type: "refresh_token", refresh_token: connection.token.refresh_token, client_id: connection.client.client_id });
+    expect(refresh.res.status).toBe(200);
+    expect(refresh.body.scope).toBe("membership:read");
+    expect((env.store as MemoryOAuthStore).grants.size).toBe(1);
   });
 });
