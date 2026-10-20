@@ -77,6 +77,11 @@ export async function createServiceMcp(svc: NetworkService, o: ServiceMcpOptions
     apps,
     platform: platformHooks({
       store: svc.people, otp: api.otp, accounts: api.accounts, sessions: api.sessions,
+      authenticatedSiteSession: (app,req)=>api.authenticatedSiteSession(app,req),
+      cloudAuthorityRequired: app=>isAppId(app) && api.cloudAuthorityRequired(app),
+      beginCloudOAuth: (app,rid)=>isAppId(app)?api.beginCloudOAuth(app,rid):Promise.resolve(undefined),
+      cloudGrantAuthority: (app,req,resource)=>isAppId(app)?api.cloudGrantAuthority(app,req,resource):Promise.resolve(undefined),
+      validateCloudGrant: grant=>isAppId(grant.app)?api.validateCloudGrant(grant):Promise.resolve("invalid" as const),
       app: id => svc.apps[id],
       // The same cookie as the platform API (packages/platform/src/api.ts): sid_<app> in dev, __Host-sid elsewhere.
       cookieName: id => (dev ? `sid_${id}` : "__Host-sid"), secureCookie: !dev,

@@ -23,7 +23,7 @@ const request = (r: Row): AuthRequest => ({
 });
 const grant = (r: Row): Grant => ({
   id: r.id, clientId: r.client_id, app: r.app_id, phoneKey: r.phone_key, personId: r.person_id ?? null, scopes: arr(r.scopes) as Grant["scopes"],
-  resource: r.resource, createdAt: ms(r.created_at)!, expiresAt: ms(r.expires_at)!, revokedAt: ms(r.revoked_at),
+  resource: r.resource, createdAt: ms(r.created_at)!, expiresAt: ms(r.expires_at)!, revokedAt: ms(r.revoked_at), ...(r.cloud_authority ? {cloudAuthority:r.cloud_authority} : {}),
 });
 const code = (r: Row): AuthCode => ({
   hash: r.hash, grantId: r.grant_id, clientId: r.client_id, redirectUri: r.redirect_uri, codeChallenge: r.code_challenge, resource: r.resource,
@@ -106,11 +106,17 @@ export class PgOAuthStore implements OAuthStore {
     const n = { ...cur, ...patch };
     await this.sql`update oauth.auth_requests set e164 = ${n.e164}, person_id = ${n.personId}, step = ${n.step} where id = ${id}`;
   }
+  async takeConsentRequest(id: string, at: number) {
+    const [r] = await this.sql`delete from oauth.auth_requests
+      where id = ${id} and step = 'consent' and e164 is not null and expires_at > ${ts(at)}
+      returning *`;
+    return r ? request(r) : undefined;
+  }
   async deleteAuthRequest(id: string) { await this.sql`delete from oauth.auth_requests where id = ${id}`; }
 
   async putGrant(g: Grant) {
-    await this.sql`insert into oauth.grants (id, client_id, app_id, phone_key, person_id, scopes, resource, created_at, expires_at, revoked_at)
-      values (${g.id}, ${g.clientId}, ${g.app}, ${g.phoneKey}, ${g.personId}, ${this.sql.array(g.scopes, "TEXT")}, ${g.resource}, ${ts(g.createdAt)}, ${ts(g.expiresAt)}, ${ts(g.revokedAt)})`;
+    await this.sql`insert into oauth.grants (id, client_id, app_id, phone_key, person_id, scopes, resource, created_at, expires_at, revoked_at, cloud_authority)
+      values (${g.id}, ${g.clientId}, ${g.app}, ${g.phoneKey}, ${g.personId}, ${this.sql.array(g.scopes, "TEXT")}, ${g.resource}, ${ts(g.createdAt)}, ${ts(g.expiresAt)}, ${ts(g.revokedAt)}, ${g.cloudAuthority ?? null}::jsonb)`;
   }
   async getGrant(id: string) {
     const [r] = await this.sql`select * from oauth.grants where id = ${id}`;
@@ -121,8 +127,8 @@ export class PgOAuthStore implements OAuthStore {
   }
   async revokeGrant(id: string, at: number) {
     return this.sql.begin(async tx => {
-      await tx`update oauth.tokens set revoked_at = ${ts(at)} where grant_id = ${id} and revoked_at is null`;
       const r = await tx`update oauth.grants set revoked_at = ${ts(at)} where id = ${id} and revoked_at is null returning id`;
+      await tx`update oauth.tokens set revoked_at = ${ts(at)} where grant_id = ${id} and revoked_at is null`;
       await tx`update oauth.signup_drafts set fields='{}'::jsonb where grant_id=${id}`;
       return r.length > 0;
     });
@@ -131,6 +137,10 @@ export class PgOAuthStore implements OAuthStore {
   async putCode(c: AuthCode) {
     await this.sql`insert into oauth.codes (hash, grant_id, client_id, redirect_uri, code_challenge, resource, scopes, created_at, expires_at, used_at)
       values (${c.hash}, ${c.grantId}, ${c.clientId}, ${c.redirectUri}, ${c.codeChallenge}, ${c.resource}, ${this.sql.array(c.scopes, "TEXT")}, ${ts(c.createdAt)}, ${ts(c.expiresAt)}, ${ts(c.usedAt)})`;
+  }
+  async getCode(hash: string) {
+    const rows=await this.sql`select * from oauth.codes where hash=${hash}`;
+    return rows[0]?code(rows[0]):undefined;
   }
   async takeCode(hash: string, at: number) {
     // One statement: the first caller gets used_at = null back, every later caller sees the earlier use.
@@ -152,14 +162,23 @@ export class PgOAuthStore implements OAuthStore {
     await this.sql`update oauth.tokens set revoked_at = ${ts(at)} where hash = ${hash} and revoked_at is null`;
   }
   async rotateRefresh(hash: string, at: number, pair: readonly [Token, Token], audit: AuditRow) {
-    return this.sql.begin(async tx => {
+    const started=performance.now();
+    try { return await this.sql.begin(async tx => {
+      const [owner]=await tx`select revoked_at,expires_at,cloud_authority from oauth.grants where id=${pair[0].grantId} for update`;
+      const liveAt=()=>at+Math.ceil(performance.now()-started);
+      if(!owner || owner.revoked_at!==null || ms(owner.expires_at)!<=liveAt() || (pair[0].grantId.startsWith("grant_cloud_") && !owner.cloud_authority)
+        || pair.some(t=>t.expiresAt>ms(owner.expires_at)!))return false;
       const r = await tx`update oauth.tokens set rotated_at = ${ts(at)} where hash = ${hash} and kind = 'refresh' and rotated_at is null and revoked_at is null returning hash`;
       if (!r.length) return false;
       for (const t of pair) await tx`insert into oauth.tokens (hash, kind, grant_id, client_id, app_id, resource, scopes, created_at, expires_at, revoked_at, rotated_at)
         values (${t.hash}, ${t.kind}, ${t.grantId}, ${t.clientId}, ${t.app}, ${t.resource}, ${tx.array(t.scopes, "TEXT")}, ${ts(t.createdAt)}, ${ts(t.expiresAt)}, ${ts(t.revokedAt)}, ${ts(t.rotatedAt)})`;
       await tx`insert into oauth.audit (at, kind, client_id, grant_id, app_id, detail) values (${ts(audit.at)}, ${audit.kind}, ${audit.clientId}, ${audit.grantId}, ${audit.app}, ${audit.detail})`;
+      if(ms(owner.expires_at)!<=liveAt())throw new Error("Cloud OAuth refresh authority expired during transaction");
       return true;
-    });
+    }); } catch(error) {
+      if(error instanceof Error && error.message==="Cloud OAuth refresh authority expired during transaction")return false;
+      throw error;
+    }
   }
 
   async audit(a: AuditRow) {

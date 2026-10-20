@@ -69,7 +69,7 @@ const ridOf = (html: string) => /name="rid" value="([^"]+)"/.exec(html)?.[1];
 
 export interface FlowOpts { scope?: string; redirectUri?: string; verifier?: string; resource?: string; state?: string; extraQuery?: Record<string, string>; deny?: boolean; cookie?: string }
 
-/** The browser part: authorize, sign in with the texted code. Returns the redirect Location. */
+/** The browser part: confirm the phone if needed, then explicitly approve this client. */
 export async function browserFlow(env: Env, domain: string, clientId: string, phone: string, f: FlowOpts = {}) {
   const q = new URLSearchParams({
     response_type: "code", client_id: clientId, redirect_uri: f.redirectUri ?? "https://client.example/callback",
@@ -82,7 +82,16 @@ export async function browserFlow(env: Env, domain: string, clientId: string, ph
   const browser = /((?:__Host-)?mcp_auth=[^;]+)/.exec(start.headers.get("set-cookie") ?? "")?.[1];
   const rid = ridOf(html);
   if (!rid || !browser) return { start, html, location: null as string | null };
-  const cookie = [browser, f.cookie].filter(Boolean).join("; ");
+  let cookie = [browser, f.cookie].filter(Boolean).join("; ");
+  const acceptCookies = (response: Response) => {
+    const values = new Map(cookie.split("; ").filter(Boolean).map(p => { const at = p.indexOf("="); return [p.slice(0, at), p.slice(at + 1)]; }));
+    for (const header of response.headers.getSetCookie()) {
+      const pair = header.split(";")[0]!; const at = pair.indexOf("=");
+      if (pair.slice(at + 1)) values.set(pair.slice(0, at), pair.slice(at + 1)); else values.delete(pair.slice(0, at));
+    }
+    cookie = [...values].map(([name, value]) => `${name}=${value}`).join("; ");
+  };
+  acceptCookies(start);
   const post = (path: string, form: Record<string, string>) => env.fetch(new Request(`${origin(domain)}${path}`, {
     method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", cookie, origin: origin(domain) }, body: new URLSearchParams({ rid, ...form }).toString(),
   }));
@@ -90,11 +99,20 @@ export async function browserFlow(env: Env, domain: string, clientId: string, ph
     const done = await post("/oauth/authorize/cancel", {});
     return { start, html, location: done.headers.get("location"), status: done.status, siteCookie: null };
   }
-  env.clock.t += 31_000;
-  const p = await post("/oauth/authorize/phone", { phone });
-  if (p.status !== 200) return { start, html: await p.text(), location: null };
-  const done = await post("/oauth/authorize/code", { code: env.provider.last(phone) ?? "000000" });
-  return { start, html: await done.text(), location: done.headers.get("location"), status: done.status, siteCookie: done.headers.get("set-cookie") };
+  const siteCookies = [...start.headers.getSetCookie()];
+  if (!html.includes('action="/oauth/authorize/consent"')) {
+    env.clock.t += 31_000;
+    const p = await post("/oauth/authorize/phone", { phone });
+    if (p.status !== 200) return { start, html: await p.text(), location: null };
+    const verified = await post("/oauth/authorize/code", { code: env.provider.last(phone) ?? "000000" });
+    html = await verified.text();
+    siteCookies.push(...verified.headers.getSetCookie());
+    acceptCookies(verified);
+    if (verified.status !== 200) return { start, html, location: verified.headers.get("location"), status: verified.status, siteCookie: siteCookies.join(", ") };
+  }
+  const done = await post("/oauth/authorize/consent", { decision: "approve" });
+  siteCookies.push(...done.headers.getSetCookie());
+  return { start, html: await done.text(), location: done.headers.get("location"), status: done.status, siteCookie: siteCookies.join(", ") };
 }
 
 export async function tokenRequest(env: Env, domain: string, form: Record<string, string>, headers: Record<string, string> = {}) {

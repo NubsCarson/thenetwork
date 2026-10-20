@@ -11,7 +11,7 @@ import { PgOAuthStore } from "../src/pg-store.ts";
 import { createMcpHandler } from "../src/handler.ts";
 import { platformHooks } from "../src/hooks.ts";
 import { sha256hex } from "../src/util.ts";
-import { addMember, call, connect, origin, PHONE_A, setup, tokenRequest } from "./harness.ts";
+import { addMember, call, connect, origin, PHONE_A, register, setup, tokenRequest } from "./harness.ts";
 
 const USER = process.env.USER ?? "postgres";
 // An admitted Linux fixture may provide its already-running, isolated loopback PG.
@@ -41,6 +41,32 @@ describe.skipIf(!EXPLICIT_PG && !pgAvailable)("PgOAuthStore", () => {
   afterAll(async () => {
     await store?.close();
     await admin(`drop database if exists ${DB} with (force)`).catch(() => {});
+  });
+
+  test("client approval is consumed once across connections and refuses unverified or expired requests", async () => {
+    const env = setup({ store });
+    const client = await register(env, "peon.biz");
+    const at = env.clock.t;
+    const pending: import("../src/store.ts").AuthRequest = {
+      id: `approval_${randomUUID()}`, browserHash: sha256hex("browser-cookie"),
+      clientId: client.body.client_id, app: "peon", redirectUri: "https://client.example/callback",
+      state: "state", codeChallenge: sha256hex("challenge"), scopes: ["membership:read"],
+      resource: "https://peon.biz/mcp", e164: PHONE_A, personId: null,
+      step: "consent", createdAt: at, expiresAt: at + 60_000,
+    };
+    const other = new PgOAuthStore(testUrl.toString());
+    try {
+      await store.putAuthRequest(pending);
+      const results = await Promise.all([store, other].map(s => s.takeConsentRequest(pending.id, at)));
+      expect(results.filter(Boolean)).toEqual([pending]);
+      expect(await store.getAuthRequest(pending.id)).toBeUndefined();
+      for (const patch of [{ step: "code" as const }, { e164: null }, { expiresAt: at }]) {
+        const refused = { ...pending, ...patch, id: `approval_${randomUUID()}` };
+        await store.putAuthRequest(refused);
+        expect(await other.takeConsentRequest(refused.id, at)).toBeUndefined();
+        expect(await store.getAuthRequest(refused.id)).toEqual(refused);
+      }
+    } finally { await other.close(); }
   });
 
   test("authenticated pre-Join draft persists for retries, discards once and rejects wrong app/phone and revoked grants", async () => {

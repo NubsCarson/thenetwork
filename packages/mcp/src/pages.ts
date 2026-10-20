@@ -2,7 +2,7 @@
 // Plain server-rendered HTML forms, no script except Cloudflare Turnstile when it is configured.
 // Every string from a client (its name, its redirect host) is escaped and labelled as the client's claim.
 import type { McpApp } from "./apps.ts";
-import type { Grant } from "./store.ts";
+import type { Grant, Scope } from "./store.ts";
 import { esc } from "./util.ts";
 
 // Same marks as the four homepage headers.
@@ -67,8 +67,27 @@ ${err(o.error)}
 <form method="post" action="/oauth/authorize/cancel">${hidden(rid)}<button class="secondary" name="decision" value="deny">Cancel</button></form>`, { status: o.error ? 400 : 200 });
 }
 
-export function messagePage(app: McpApp, title: string, text: string, status = 400) {
-  return page(app, title, `<h1>${esc(title)}</h1><p>${esc(text)}</p>`, { status });
+const SCOPE_TEXT: Record<Scope, string> = {
+  "apps:read": "See which Network apps are available",
+  "membership:read": "Read your membership status and new updates",
+  "profile:write": "Save your profile and prepare signup details",
+};
+
+/** One pending OAuth connection, not an account page or a sign-in destination. */
+export function consentPage(app: McpApp, rid: string, clientName: string | null, redirectHost: string, redirectOrigin: string, scopes: Scope[], o: { unavailable?: boolean } = {}) {
+  return page(app, "Allow access", `<h1>Allow this assistant?</h1>
+<p><strong>${esc(clientName ?? "An unnamed assistant")}</strong> (the name it provided)</p>
+<p class="muted">Return to ${esc(redirectHost)}.</p>
+${o.unavailable ? '<p>We can’t check your connection right now. Wait a moment, then try again below, or return to your agent or text conversation.</p>' : ""}
+<div class="box"><p>It will be able to:</p><ul>${scopes.map(s => `<li>${esc(SCOPE_TEXT[s])}</li>`).join("")}</ul></div>
+<form method="post" action="/oauth/authorize/consent">${hidden(rid)}
+<div class="row"><button name="decision" value="approve">${o.unavailable ? "Try again" : "Allow"}</button><button class="secondary" name="decision" value="deny">Don't allow</button></div>
+</form>`, { formTargets: [redirectOrigin], status: o.unavailable ? 503 : 200 });
+}
+
+export function messagePage(app: McpApp, title: string, text: string, status = 400, retryPath?:string) {
+  const retry=retryPath?.startsWith("/")&&!retryPath.startsWith("//")?`<a href="${esc(retryPath)}">Try again</a>`:"";
+  return page(app, title, `<h1>${esc(title)}</h1><p>${esc(text)}</p>${retry}`, { status });
 }
 
 export function consentsPage(app: McpApp, grants: Array<Grant & { clientName: string | null }>, fmt: (ms: number) => string, notice?: string) {

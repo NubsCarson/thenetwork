@@ -5,6 +5,8 @@
 import type { Accounts, AppInfo, MembershipState, OtpService, PeopleStore, SessionService } from "@thenetwork/platform";
 import { canJoinApp, canMatchInApp, lowestAge, normalizePhone } from "@thenetwork/platform";
 import type { McpAppId } from "./apps.ts";
+import type { CloudGrantAuthority } from "../../core/src/svc/network-delegation.ts";
+import type { Grant } from "./store.ts";
 
 /** A membership state as the person's own agent may see it. No age, no member id, nothing about others. */
 export type PublicStatus = "not_joined" | "invited" | "onboarding" | "active" | "stopped" | "on_hold";
@@ -23,6 +25,11 @@ export type AssistantKind = "chatgpt" | "claude" | "grok" | "web";
 export interface PublicUpdate { summary: string; at: string; kind: string }
 
 export interface PlatformHooks {
+  cloudAuthorityRequired?(app: McpAppId): boolean;
+  /** Only an OAuth-owner-generated live request ID, never a caller redirect URL. */
+  beginCloudOAuth?(app: McpAppId, requestId: string): Promise<{url:string;setCookie:string}|undefined>;
+  cloudGrantAuthority?(app: McpAppId, req: Request, resource: string): Promise<CloudGrantAuthority | "unavailable" | undefined>;
+  validateCloudGrant?(grant: Grant): Promise<"valid" | "invalid" | "unavailable">;
   /** E.164 for a typed number, or undefined (the platform accepts +1 only). */
   normalizePhone(input: unknown): string | undefined;
   /** Send a code. The same answer whether or not the number is known. */
@@ -60,7 +67,7 @@ export interface PlatformHooks {
   /** An assistant was connected (consent granted) or disconnected (grant revoked) for a person. */
   assistantLinked?(personId: string, assistant: AssistantKind, active: boolean): Promise<void>;
   /** The person already signed in on this site (the site's session cookie), if any. */
-  session?(app: McpAppId, req: Request): Promise<SignedIn | undefined>;
+  session?(app: McpAppId, req: Request): Promise<SignedIn | "unavailable" | undefined>;
   /** Start a site session after a verified code, so the person is signed in on the site too. Returns a Set-Cookie value. */
   createSession?(app: McpAppId, who: SignedIn): Promise<string | undefined>;
 }
@@ -80,6 +87,11 @@ export function publicStatus(state: MembershipState | undefined, review: string 
 }
 
 export interface PlatformParts {
+  authenticatedSiteSession?(app: AppInfo["id"], req: Request): Promise<Awaited<ReturnType<SessionService["authenticate"]>> | "unavailable">;
+  cloudAuthorityRequired?: PlatformHooks["cloudAuthorityRequired"];
+  beginCloudOAuth?: PlatformHooks["beginCloudOAuth"];
+  cloudGrantAuthority?: PlatformHooks["cloudGrantAuthority"];
+  validateCloudGrant?: PlatformHooks["validateCloudGrant"];
   store: PeopleStore;
   otp: OtpService;
   accounts: Accounts;
@@ -124,6 +136,10 @@ export function platformHooks(p: PlatformParts): PlatformHooks {
   const siteCookie = (id: McpAppId, token: string) =>
     `${cookieName(id)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${p.sessionMaxAge ?? 30 * 24 * 3600}${p.secureCookie === false ? "" : "; Secure"}`;
   return {
+    cloudAuthorityRequired: p.cloudAuthorityRequired,
+    beginCloudOAuth: p.beginCloudOAuth,
+    cloudGrantAuthority: p.cloudGrantAuthority,
+    validateCloudGrant: p.validateCloudGrant,
     normalizePhone,
     setSignupAgeCleanup(fn) { draftCleanup = fn; p.store.setAgeFloorCleanup(cleanAge); },
     withSignupAgePolicy(key, id, fn) {
@@ -136,6 +152,7 @@ export function platformHooks(p: PlatformParts): PlatformHooks {
       });
     },
     async startOtp(id, e164, ip) {
+      if(p.cloudAuthorityRequired?.(id))return {ok:false,error:"unavailable"};
       const app = p.app(id);
       if (!app) return { ok: false, error: "unavailable" };
       // A banned number gets the same answer as any other, and no code is sent (no sign-in, no grant).
@@ -184,7 +201,8 @@ export function platformHooks(p: PlatformParts): PlatformHooks {
     session: p.sessions && (async (id, req) => {
       const app = p.app(id);
       const token = cookieValue(req.headers.get("cookie"), cookieName(id));
-      const a = app && token ? await p.sessions!.authenticate(app.id, token) : undefined;
+      const a = app && token ? await (p.authenticatedSiteSession ? p.authenticatedSiteSession(app.id,req) : p.sessions!.authenticate(app.id, token)) : undefined;
+      if(a==="unavailable")return "unavailable";
       if (!a || (await p.accounts.held(a.session.e164))) return undefined;
       return {
         e164: a.session.e164, personId: (await p.accounts.personFor(a.session.e164))?.id ?? null,
@@ -192,6 +210,7 @@ export function platformHooks(p: PlatformParts): PlatformHooks {
       };
     }),
     createSession: p.sessions && (async (id, who) => {
+      if(p.cloudAuthorityRequired?.(id))return undefined;
       const app = p.app(id);
       if (!app) return undefined;
       const { token } = await p.sessions!.create(app.id, who.e164, who.personId);

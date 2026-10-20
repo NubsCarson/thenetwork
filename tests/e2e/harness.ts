@@ -251,14 +251,19 @@ export async function connectMcp(st: Stack, app: AppId, phone: string, o: { brow
   if (!page.headers.has("location")) {
     const rid = /name="rid" value="([^"]+)"/.exec(html)?.[1];
     if (!rid) return { reg, client, token: undefined, html };
-    st.clock.advance(31_000);
-    await st.site(app, "/oauth/authorize/phone", { browser: b, form: { rid, phone } });
-    done = await st.site(app, "/oauth/authorize/code", { browser: b, form: { rid, code: st.otp.last(phone) ?? "000000" } });
-    html = await done.clone().text();
+    if (!html.includes('action="/oauth/authorize/consent"')) {
+      st.clock.advance(31_000);
+      await st.site(app, "/oauth/authorize/phone", { browser: b, form: { rid, phone } });
+      done = await st.site(app, "/oauth/authorize/code", { browser: b, form: { rid, code: st.otp.last(phone) ?? "000000" } });
+      html = await done.clone().text();
+    }
+    if (done.status === 200 && html.includes('action="/oauth/authorize/consent"')) {
+      done = await st.site(app, "/oauth/authorize/consent", { browser: b, form: { rid, decision: "approve" } });
+    }
   }
   const loc = done.headers.get("location");
   const code = loc ? new URL(loc).searchParams.get("code") : null;
-  if (!code) return { reg, client, token: undefined, html: await done.text() };
+  if (!code) return { reg, client, token: undefined, html };
   const tok = await st.site(app, "/oauth/token", { form: { grant_type: "authorization_code", code, redirect_uri: redirect, client_id: client.client_id, code_verifier: VERIFIER, resource } });
   return { reg, client, location: loc!, token: (await tok.json()) as Record<string, any>, html };
 }
