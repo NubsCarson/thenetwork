@@ -21,6 +21,9 @@ export function summarizeRun(log: MatchingRunLog, proposals: EngineProposal[], o
   return {
     id: `${opts.shadow ? "shadow-" : ""}${log.runId}${opts.city ? `-${opts.city}` : ""}`, at: opts.at, city: opts.city, engineVersion: log.engineVersion,
     proposals: proposals.length, wallMs: opts.wallMs, shadow: opts.shadow,
+    matchingJudge: { model: log.judgeModel, calls: log.judge.calls, failures: log.judge.failures,
+      verdicts: log.judge.verdicts.filter(v => v.verdict !== null).length,
+      selected: proposals.length, judged: proposals.filter(p => p.judged).length },
     funnel: {
       generated: f.generated, passedHardFilters: f.passedHardFilters, deduped: f.deduped, eligible: f.eligible,
       belowThreshold: f.belowThreshold, budgetSkips: f.budgetSkips, selected: f.selected, exploration: f.exploration, dealbreakers: f.dealbreakers,

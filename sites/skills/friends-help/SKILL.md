@@ -8,13 +8,15 @@ metadata:
   site: https://friends.help
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.2"
+  version: "1.1.5"
 ---
 
 # friends.help
 
 If the person asked you to read this file and follow it, they want to join. Start now with
 "How a person joins" below.
+
+{{RESPONSE_STYLE}}
 
 friends.help helps people make friends, by text. The agent learns what the person
 likes to do and suggests small group plans (3 to 6 people) at public places near them: parks,
@@ -104,7 +106,7 @@ to share a base profile. Nobody can learn whether a phone number uses friends.he
 
 - Text STOP: stops every text from this number.
 - Text "leave friends.help": stops friends.help only.
-- Export or delete at https://friends.help/settings.
+- To request an export or deletion, email help@ntwrk.party.
 
 ## Support
 

@@ -4,11 +4,13 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { mcpUrlFor, skillsConfig } from "./skills.config.ts";
-import { agentRow } from "./agents.ts";
+import { RESPONSE_STYLE } from "./skill-responses.ts";
+import { agentRow, messagesHref, joinMessageFor, promptFor } from "./agents.ts";
 import { RUN_WORKER_FIRST } from "../deploy/router.ts";
 import { stagingSiteOrigins } from "../packages/platform/src/apps.ts";
 
-export type AppId = "ntwrk" | "slop" | "peon" | "friends";
+import type { AppId } from "../packages/core/src/types.ts";
+export type { AppId };
 
 export interface Site {
   app: AppId;
@@ -32,7 +34,7 @@ export const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com";
 /**
  * Security headers for every page (Cloudflare reads dist/_headers; the dev server sends the same).
  * Everything is same-origin except the Turnstile script and frame. No site may frame a page (the
- * settings page has stop, leave and delete buttons).
+ * signup page has consent controls).
  */
 export const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy": `default-src 'self'; script-src 'self' ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`,
@@ -79,7 +81,8 @@ export function walk(dir: string): string[] {
 export function skillText(name: string, env: Record<string, string | undefined> = process.env): string {
   const s = SITES.find((x) => x.skill === name);
   if (!s) throw new Error(`no site for skill ${name}`);
-  return fill(readFileSync(join(SKILLS_DIR, name, "SKILL.md"), "utf8"), env, s.domain);
+  const source = readFileSync(join(SKILLS_DIR, name, "SKILL.md"), "utf8").replaceAll("{{RESPONSE_STYLE}}", RESPONSE_STYLE.trim());
+  return fill(source, env, s.domain);
 }
 
 /** The frontmatter description of a SKILL.md (one line, no YAML block scalars in our files). */
@@ -215,14 +218,18 @@ export async function buildSite(s: Site, outdir: string, env: Record<string, str
     writeSkills(s, outdir, env);
     // The landing page's logo row (agents.ts), before fill() so a staging build rewrites its links too.
     const home = join(outdir, "index.html");
-    writeFileSync(home, readFileSync(home, "utf8").replaceAll("{{AGENTS}}", agentRow(s, skillsConfig(env).TEXT_LINE)));
+    const skill = skillText(s.skill, env);
+    const version = (Bun.YAML.parse(skill.match(/^---\n([\s\S]*?)\n---/)![1]!) as { metadata: { version: string } }).metadata.version;
+    writeFileSync(home, readFileSync(home, "utf8")
+      .replace(/(<code data-prompt>)[\s\S]*?(<\/code>)/, (_all, open, close) => `${open}${promptFor(s, version)}${close}`)
+      .replaceAll("{{AGENTS}}", agentRow(s, version)));
     const problems: string[] = [];
     for (const f of walk(outdir)) {
       const full = join(outdir, f);
       if (statSync(full).size === 0) problems.push(`${f} is empty`);
       if (!TEXT.test(f)) continue;
       const before = readFileSync(full, "utf8");
-      const after = fill(before, env, s.domain);
+      const after = fill(before.replaceAll("{{MESSAGES_HREF}}", messagesHref(s, skillsConfig(env).TEXT_LINE)).replaceAll("{{TEXT_MESSAGE}}", joinMessageFor(s)), env, s.domain);
       if (after !== before) writeFileSync(full, after);
       if (after.includes("{{")) problems.push(`${f} has an unfilled {{placeholder}}`);
       if (env.DEPLOY_TARGET === "production" && f.endsWith(".html")) {

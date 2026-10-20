@@ -48,7 +48,7 @@ export function readBackFacts(p: SlopOnboarding): ReadBackFact[] {
     const d = p.distance!.value;
     if (d.mode === "radius") out.push({ field: "distance", text: `within ${d.miles} mi` });
     else if (d.mode === "city") out.push({ field: "distance", text: "anywhere in the city" });
-    else out.push({ field: "distance", text: `dating in ${list(d.markets.map(m => MARKET_NAME[m] ?? m))}` });
+    else out.push({ field: "distance", text: `dating in ${list(d.markets.map(m => MARKET_NAME[m] ?? m))}${d.miles === undefined ? "" : ` within ${d.miles} mi`}` });
   }
   if (loc) out.push({ field: "location", text: p.distance?.value.mode === "radius" ? `of ${loc}` : `near ${loc}` });
   const likes = [...p.interests.filter(ok).map(i => INTEREST_PHRASE[i.value] ?? i.value.replace(/_/g, " ")), ...p.activities.filter(ok).map(a => ACT_PHRASE[a.value])];

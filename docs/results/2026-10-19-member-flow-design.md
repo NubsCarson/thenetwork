@@ -103,3 +103,14 @@ All 12 removed site paths and all four removed studio screens return 404 on the 
 The browser shows the updated gallery at http://127.0.0.1:5190. No deployment or live sends.
 Full integration rerun: 526 pass, one existing Observatory scorecard parity failure
 (completion 0.313 versus 0.5), matching the unchanged-base reproduction above.
+
+## Integration with current main
+
+Kept the newer removal of standalone settings pages and updated the studio to omit that screen.
+Kept account-bound server drafts and account-change resets. Fragment prefill now uses only the
+current link; it does not retain profile fields in session storage. Kept the newer privacy and
+agent-only account guidance. Updated the app-info output schema to remove the deleted safety URL.
+The historical preview images and test counts above describe the earlier iteration.
+
+Current validation: typecheck and all four builds pass; 152 focused site/MCP checks pass;
+42 end-to-end checks pass, with three optional browser checks skipped.

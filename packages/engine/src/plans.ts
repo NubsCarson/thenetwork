@@ -21,7 +21,7 @@ import { availabilityProb, candidateSlots, timeOptionsPhrase, type AvailabilityE
 import { DEFAULT_ATTENTION, DEFAULT_CONFIG, DEFAULT_PLANS, type AttentionConfig, type PlansConfig } from "./config.ts";
 import { tokenize } from "./embed.ts";
 import { privateVocabulary } from "./explain.ts";
-import { isMinor, memberReason, pairReason } from "./filters.ts";
+import { isMinor, memberReason } from "./filters.ts";
 import { makeCompat } from "./group.ts";
 import { checkMemberFacing } from "./judgeCommon.ts";
 import { fromLocal, localParts } from "@thenetwork/core";
@@ -483,7 +483,7 @@ export const PLAN_COPY_PUBLIC: ReadonlySet<string> = new Set(tokenize([...COST, 
  * vocabulary) and a name-token check; richer variants are dropped first; null if none passes.
  * Null for any minor involved and for anything romance (plans never are).
  */
-export function buildPlanProbe(w: World, plan: Plan, recipient: MemberId, now: number, tz: string): string | null {
+export function buildPlanProbe(w: World, plan: Plan, recipient: MemberId, tz: string): string | null {
   const others = plan.invited.filter(x => x !== recipient);
   if (!plan.invited.includes(recipient) || w.pack.ontology.lanes.some(l => l.neverInPlans && l.id === plan.category)) return null;
   if ([recipient, ...others].some(id => !w.get(id) || isMinor(w, id))) return null;

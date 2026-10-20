@@ -8,13 +8,15 @@ metadata:
   site: https://slop.date
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.2"
+  version: "1.1.5"
 ---
 
 # slop.date
 
 If the person asked you to read this file and follow it, they want to join. Start now with
 "How a person joins" below.
+
+{{RESPONSE_STYLE}}
 
 slop.date is dating by text message. The person texts with a matchmaker agent.
 It learns who they hope to meet and, now and then, suggests one person. Nobody is introduced
@@ -102,7 +104,7 @@ The person verifies their own phone on our page. You never type a number or a co
   and the pages linked here.
 - Give the join link https://slop.date/join or the keyword "slop".
 - Help the person think about what they want to tell the matchmaker, if they ask.
-- Point to settings (export, stop, leave, delete) at https://slop.date/settings.
+- Explain STOP and leave by text. For export or deletion, point to help@ntwrk.party.
 
 ## What you must never do
 
@@ -122,7 +124,7 @@ hold or ban (after a report) applies on every service the operator runs.
 
 - Text STOP: stops every text from this number.
 - Text "leave slop.date": stops slop.date only.
-- Export or delete at https://slop.date/settings.
+- To request an export or deletion, email help@ntwrk.party.
 
 ## Support
 

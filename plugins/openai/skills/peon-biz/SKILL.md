@@ -105,7 +105,7 @@ to share a base profile. Nobody can learn whether a phone number uses peon.biz.
 
 - Text STOP: stops every text from this number.
 - Text "leave peon.biz": stops peon.biz only.
-- Export or delete at https://peon.biz/settings.
+- To request an export or deletion, email help@ntwrk.party.
 
 ## Support
 

@@ -52,7 +52,7 @@ import { activityHints, BOOKING_GAP, PLAN_VENUES, planLedger, statedWindows } fr
 /** A ledger event as the Network builds it: the emitter adds the id and the Clock time. */
 type LedgerInput = CapitalEventInput extends infer E ? (E extends CapitalEventInput ? Omit<E, "t"> : never) : never;
 import type { NetworkStore } from "./store.ts";
-import { HOLD, Trust, type TrustEvent, type TrustLevel, type TrustState } from "./trust.ts";
+import { HOLD, Trust, type TrustLevel, type TrustState } from "./trust.ts";
 import type { AppHooks, AppTag, HookOpp } from "./apphooks.ts";
 import { isSeatId, postingFromDraft, postingFromFacts, postingProblem, postingsOf, POSTING_COPY, readPostingText, seatIdOf, seatOwnerOf, SEAT_COPY, type JobPosting, type PostingDraft } from "./jobs.ts";
 import { checkInReport, reportKindOf, URGENT_REPORTS, type ReportKind, type SafetyReport } from "./reports.ts";
@@ -287,7 +287,7 @@ interface MemberState {
   /** Venues suggested to this member (venue id -> when), so a repeat ask gets new ideas or nothing. */
   suggested: Map<string, number>;
   /** The last text sent to this member (the duplicate check in send()). */
-  lastSent?: { body: string; at: number };
+  lastSent?: { body: string; at: number; photoItemId?: string };
   /** Standing availability said at onboarding ("weekends, mostly"): availability tags that do not expire (plans ask 1). */
   standing?: { tags: string[]; at: number };
   /** This week's stated windows from the weekly check-in answer, and the activities named in it. */
@@ -482,6 +482,15 @@ const ASK_EVERY_DAYS = 7;
 const PRONOUN_TARGET = /^(?:him|her|them|they|he|she|my date|my match|(?:the|this|that) (?:guy|girl|person|dude|man|woman))\b/i;
 /** A reply to "Who do you mean?" that drops the question. */
 const NEVER_MIND = /^\W*(?:never ?mind|nvm|nobody|no one|none|forget it|no|nope|cancel that)\W*$/i;
+
+/** Actual NYC presence for the whole requested window; conversation ownership grants no location. */
+export function presentInNyc(snapshot: WorldSnapshot, id: MemberId, from: number, to: number): boolean {
+  const member = snapshot.members.find(m => m.id === id);
+  if (!member) return false;
+  const trips = snapshot.presence.filter(p => p.memberId === id && p.type === "temporary");
+  if (trips.some(p => p.city !== "nyc" && (p.from ?? 0) < to && (p.to ?? Infinity) > from)) return false;
+  return member.homeCity === "nyc" || trips.some(p => p.city === "nyc" && p.from !== undefined && p.to !== undefined && p.from <= from && p.to >= to);
+}
 
 export class ConsentNetwork implements NetworkUnderTest {
   readonly name = "consent";
@@ -2977,7 +2986,7 @@ export class ConsentNetwork implements NetworkUnderTest {
     } else if (this.overBudget(m)) return this.planDefer(o, id, "cap", now);
     // A crew session's extra seats (organizing reach) go to people outside the crew: they get the plain plan probe.
     const inCrew = !o.plan.crewId || !!this.crews.find(c => c.id === o.plan!.crewId)?.members.includes(id);
-    const text = plans.buildPlanProbe(this.planWorld(now), inCrew ? o.plan : { ...o.plan, crewId: undefined }, id, now, NY);
+    const text = plans.buildPlanProbe(this.planWorld(now), inCrew ? o.plan : { ...o.plan, crewId: undefined }, id, NY);
     if (!text) { this.refuse(id, "probe", "plan_copy"); return this.planAnswer(o, id, false, true); }
     const a = plans.activityById.get(o.plan.activityId)!;
     const res = this.send(m, text, {
@@ -3918,7 +3927,8 @@ export class ConsentNetwork implements NetworkUnderTest {
     }
     // Never the same text to one member twice within 10 minutes (the judge's duplicate_send rule).
     // Only plain texts are skipped; a send that changes state (onSent) is never silently dropped.
-    if (!fns.onSent && m.lastSent?.body === text && now - m.lastSent.at < DUPLICATE_WINDOW) {
+    if (!fns.onSent && m.lastSent?.body === text && now - m.lastSent.at < DUPLICATE_WINDOW
+      && (!Array.isArray(meta.approvedPhotos) || !meta.approvedPhotos.length || m.lastSent.photoItemId === (meta.approvedPhotos[0] as {itemId:string}).itemId)) {
       this.ctx.log("send_skipped", { memberId: m.id, kind, reason: "duplicate" });
       return "refused";
     }
@@ -3938,7 +3948,7 @@ export class ConsentNetwork implements NetworkUnderTest {
     this.ctx.send(m.id, text, { meta, idempotencyKey: o.key ?? `${m.id}:${++this.seq}`, reply });
     m.pendingAck = undefined;
     if (note || (m.note && now - m.note.at >= 7 * DAY)) m.note = undefined;
-    m.lastSent = { body: text, at: now };
+    m.lastSent = { body: text, at: now, ...(Array.isArray(meta.approvedPhotos) && meta.approvedPhotos.length ? {photoItemId:(meta.approvedPhotos[0] as {itemId:string}).itemId} : {}) };
     fns.onSent?.();
     return "sent";
   }
@@ -4322,8 +4332,7 @@ export class ConsentNetwork implements NetworkUnderTest {
 
   /** Is the member in New York for all of [from, to]? Announced trips elsewhere say no. */
   inNyc(id: MemberId, from: number, to: number): boolean {
-    const snap = this.snapshotCached();
-    return !snap.presence.some(p => p.memberId === id && p.type === "temporary" && p.city !== "nyc" && (p.from ?? 0) < to && (p.to ?? Infinity) > from);
+    return presentInNyc(this.snapshotCached(), id, from, to);
   }
   private snapCache?: { at: number; snap: WorldSnapshot };
   /** The public snapshot, rebuilt at most every 20 sim minutes or when something we learned changed. */
@@ -4763,8 +4772,11 @@ export class ConsentNetwork implements NetworkUnderTest {
       send: (to, body, o) => {
         const m = this.members.get(to);
         if (!m) return "refused";
+        if (o.photoIds?.length && (!o.approvedPhotos?.length || o.photoIds.length !== o.approvedPhotos.length
+          || o.photoIds.some((id, i) => id !== o.approvedPhotos![i]!.photoId))) return "refused";
         this.dirty = true;
-        const r = this.send(m, body, { type: "relay", proposalId: o.matchId }, "relay", { about: [o.from], key: o.key, relayFrom: o.from, ...(o.contact ? { relayContact: o.contact } : {}) });
+        const r = this.send(m, body, { type: "relay", proposalId: o.matchId,
+          ...(o.approvedPhotos?.length ? { approvedPhotos: o.approvedPhotos } : {}) }, "relay", { about: [o.from], key: o.key, relayFrom: o.from, ...(o.contact ? { relayContact: o.contact } : {}) });
         return r === "sent" ? "sent" : r === "deferred" ? "deferred" : "refused";
       },
     };

@@ -1,3 +1,4 @@
+import { otpConfigProblems } from "../../packages/platform/src/otp-config.ts";
 // The shared backend as one deployable process (docs/deploy.md). It wraps the Network service
 // (packages/network/service) for a host that gives the process one public port (Railway):
 //
@@ -21,9 +22,10 @@
 // request loses every proxy and forwarding header, so a client can never pick either one.
 import { appForHost, stagingSiteOrigins, DEFAULT_HOST_MAP, isAppId, type AppId } from "../../packages/platform/src/apps.ts";
 import { requirePlatformEnv, type Env, type PlatformEnv } from "../../packages/platform/src/env.ts";
-import { PROXY_HEADERS, verifyProxyHeaders } from "../../packages/platform/src/proxy.ts";
+import { isProxyHeader, PROXY_HEADERS, verifyProxyHeaders } from "../../packages/platform/src/proxy.ts";
 import { timingSafeEqual } from "node:crypto";
 import { opsConfigFromEnv, type OpsConfig } from "./ops.ts";
+import { networkRoutePolicy } from "../../packages/network/service/route-authority.ts";
 import { RELAY_MAX_BODY_BYTES, RELAY_PATH } from "../../packages/network/service/relay-endpoint.ts";
 
 export { PROXY_HEADERS };
@@ -31,7 +33,6 @@ export { PROXY_HEADERS };
 export const CLIENT_IP = PROXY_HEADERS.ip;
 export const BUILD_HEADER = "x-network-build";
 const STRIP = ["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto", "x-real-ip", "forwarded", "true-client-ip"];
-const PROXY_PREFIXES = ["x-network-proxy-", "x-ntwrk-proxy-"];
 /** The Eliza gateway's signed routes (served by the service) and their body cap (the service's MAX_BODY_BYTES). */
 const INTERNAL_PATHS = new Set(["/internal/turn", "/internal/turn-receipt", "/internal/set-state", "/internal/signals", "/internal/updates", "/internal/relay"]);
 const MAX_INTERNAL_BODY = 256 * 1024;
@@ -75,14 +76,15 @@ export const MAX_PUBLIC_BODY_BYTES = 9 * 1024 * 1024;
 /** Reads and checks the environment. Fails closed: a deployed environment without its secrets does not start. */
 export function loadConfig(e: Env = process.env, argv: string[] = []): BackendConfig {
   const env = requirePlatformEnv(e);
+  const isolatedRoute = networkRoutePolicy(e);
   const deployed = env === "staging" || env === "production";
   const databaseUrl = e.NETWORK_DATABASE_URL || e.DATABASE_URL;
   const missing: string[] = [];
   if (!databaseUrl) missing.push("DATABASE_URL (or NETWORK_DATABASE_URL)");
   const proxySecret = e.PLATFORM_PROXY_SECRET || undefined;
   if (deployed) {
-    for (const k of ["PLATFORM_HASH_KEY", "TURNSTILE_SECRET_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_VERIFY_SERVICE_SID"]) if (!e[k]) missing.push(k);
-    if (e.OTP_PROVIDER !== "twilio") missing.push("OTP_PROVIDER=twilio");
+    for (const k of ["PLATFORM_HASH_KEY", "TURNSTILE_SECRET_KEY"]) if (!e[k]) missing.push(k);
+    missing.push(...otpConfigProblems(e));
     if (!proxySecret) missing.push("PLATFORM_PROXY_SECRET");
   }
   // Deployed: migrations run as the owner, the service as a login that RLS and the grants apply to
@@ -134,7 +136,7 @@ export function loadConfig(e: Env = process.env, argv: string[] = []): BackendCo
   const cloudAsked = e.NETWORK_CHANNEL === "eliza_cloud" && !argv.includes("--dry-run");
   // The Blooio adapter is built only when the global flags are on; each app's own flag is checked again per send.
   // The same global check as liveSendAllowed(env, "ntwrk") in packages/network/service/channel.ts.
-  const channel = (blooioAsked || cloudAsked) && e.BLOOIO_ALLOW_SEND === "1" && e.NTWRK_LIVE_APPROVED === "1" ? cloudAsked ? "eliza_cloud" : "blooio" : "dry-run";
+  const channel = !isolatedRoute && (blooioAsked || cloudAsked) && e.BLOOIO_ALLOW_SEND === "1" && e.NTWRK_LIVE_APPROVED === "1" ? cloudAsked ? "eliza_cloud" : "blooio" : "dry-run";
   if (blooioAsked && channel === "dry-run") warnings.push("NETWORK_CHANNEL=blooio without BLOOIO_ALLOW_SEND=1 and NTWRK_LIVE_APPROVED=1: sends stay dry-run");
   if (cloudAsked && channel === "dry-run") warnings.push("NETWORK_CHANNEL=eliza_cloud without BLOOIO_ALLOW_SEND=1 and NTWRK_LIVE_APPROVED=1: sends stay dry-run");
   if (channel === "eliza_cloud" && (!e.NETWORK_CLOUD_DELIVERY_ORIGIN || !e.SERVICE_TURN_SECRET || e.SERVICE_TURN_SECRET.length<32 || !(e.BLOOIO_FROM || e.BLOOIO_FROM_NUMBER))) throw new Error("Cloud sends need NETWORK_CLOUD_DELIVERY_ORIGIN, SERVICE_TURN_SECRET and BLOOIO_FROM");
@@ -238,7 +240,7 @@ export async function normalizeEdge(req: Request, secret: string | undefined, ho
     url.protocol = "https:";
     if (!/^[0-9a-f:.]{2,45}$/i.test(v.ip)) headers.delete(PROXY_HEADERS.ip);
   } else {
-    for (const k of [...headers.keys()]) if (PROXY_PREFIXES.some(p => k.toLowerCase().startsWith(p))) headers.delete(k);
+    for (const k of [...headers.keys()]) if (isProxyHeader(k)) headers.delete(k);
     app = appForHost(headers.get("host") ?? url.host, hostMap);
   }
   const init: RequestInit = { method: req.method, headers, redirect: "manual" };

@@ -14,6 +14,8 @@ export interface BlooioClientOptions {
   baseUrl?: string;
   fetch?: FetchLike;
   timeoutMs?: number;
+  /** OTP callers must not treat a missing or unknown status as queued. */
+  requireKnownSendStatus?: boolean;
 }
 
 // ---- Read-only response shapes (observed live 2026-10-05; v4 is beta, so all fields are optional-tolerant) ----
@@ -133,6 +135,7 @@ export class BlooioClient {
   readonly #fetch: FetchLike;
   readonly baseUrl: string;
   readonly timeoutMs: number;
+  private readonly requireKnownSendStatus: boolean;
 
   constructor(opts: BlooioClientOptions) {
     if (!opts.apiKey) throw new Error("BlooioClient requires an apiKey");
@@ -140,6 +143,7 @@ export class BlooioClient {
     this.#fetch = opts.fetch ?? ((i, init) => fetch(i, init));
     this.baseUrl = (opts.baseUrl ?? BLOOIO_API_BASE).replace(/\/$/, "");
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.requireKnownSendStatus = opts.requireKnownSendStatus ?? false;
   }
 
   toJSON() { return { baseUrl: this.baseUrl, apiKey: "[redacted]" }; }
@@ -228,6 +232,7 @@ export class BlooioClient {
     const r = (receipt.data && typeof receipt.data === "object" ? receipt.data : receipt) as Record<string, unknown>;
     const id = typeof r.id === "string" ? r.id : typeof r.message_id === "string" ? r.message_id : undefined;
     if (!id) throw new ChannelSendError("Blooio accepted send without a message id", "retryable", res.status);
+    if (this.requireKnownSendStatus && (typeof r.status !== "string" || !STATUSES.has(r.status))) throw new ChannelSendError("Blooio accepted send without a known status", "retryable", res.status);
     return {
       providerMessageId: id,
       chatId: typeof r.chat_id === "string" ? r.chat_id : chatId ?? undefined,

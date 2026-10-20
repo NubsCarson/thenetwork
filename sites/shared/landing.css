@@ -9,12 +9,11 @@ body.landing {
   font: 400 17px/1.5 "Host Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%;
 }
-.landing .l-wrap { width: min(100% - 2 * clamp(20px, 6vw, 64px), 1120px); margin-inline: auto; }
 /* A site's own styles.css may style header, main and footer for its other pages: not here. */
 .landing header, .landing main, .landing footer { max-width: none; padding-inline: 0; }
 .landing footer.l-foot { margin-block: 0; border: 0; }
 .landing .l-wrap { width: min(100% - 2 * clamp(20px, 6vw, 64px), 1120px); margin-inline: auto; }
-.landing .l-top { padding-block: clamp(20px, 3vw, 32px); }
+.landing .l-top { padding-block: clamp(20px, 3vw, 32px); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .landing .l-mark { display: inline-flex; align-items: center; gap: 10px; font-weight: 650; font-size: 18px; letter-spacing: -0.02em; color: var(--l-ink); text-decoration: none; }
 .landing .l-mark svg { width: 30px; height: 30px; flex: none; }
 .landing .l-logo-hi { fill: var(--l-hi); } .landing .l-logo-bg { fill: var(--l-bg); } .landing .l-logo-line { fill: none; stroke: var(--l-bg); }
@@ -69,6 +68,11 @@ body.landing {
   .landing .l-agent:nth-child(10) { animation-delay: 360ms; }
 }
 @keyframes l-rise { from { opacity: 0.001; transform: translateY(10px); } }
+.landing .l-text-entry { margin-top: 28px; }
+.landing .l-text-button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 24px; border-radius: 12px; background: var(--l-ink); color: var(--l-bg); font-size: 16px; font-weight: 650; text-decoration: none; }
+.landing .l-text-message { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 10px 0 0; color: var(--l-muted); font-size: 13px; }
+.landing .l-text-message code { user-select: all; -webkit-user-select: all; }
+.landing .l-text-message button { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--l-ink); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .landing .l-status { margin: 22px 0 0; min-height: 1.5em; font-size: 14px; color: var(--l-muted); }
 
 .landing .l-foot { display: flex; flex-wrap: wrap; gap: 6px 20px; padding-block: 20px 28px; font-size: 13px; }

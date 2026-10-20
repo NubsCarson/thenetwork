@@ -15,7 +15,7 @@ Local dev for the sites and the backend together: [docs/runbook-platform.md](../
 
 | App | Site | Dev port | Join |
 |---|---|---|---|
-| `ntwrk` | ntwrk.party | 5101 | Invite-only. `/join` explains the invite text and links to settings. |
+| `ntwrk` | ntwrk.party | 5101 | Invite-only. `/join` explains the invite text and returns members to their agent. |
 | `slop` | slop.date | 5102 | Open. 13+ join; matching and photos 18+ only. The safety notice is information, not a step. |
 | `peon` | peon.biz | 5103 | Open waitlist. 13+ join; matching 18+ only. |
 | `friends` | friends.help | 5104 | Open. 13+ join; matching and group plans 18+ only. |
@@ -25,9 +25,9 @@ Ages on the pages equal the platform registry (`packages/platform/src/apps.ts` `
 
 ## Layout
 
-- `<site>/public/*.html`: one file per page (landing, join, settings, privacy, terms,
+- `<site>/public/*.html`: one file per page (landing, join, privacy, terms,
   guidelines, support, 404; slop also has `safety`). Each site has its own `styles.css`.
-  The SMS terms are a section of the terms page (`terms.html#sms`). The landing page links privacy and terms only.
+  The SMS terms are a section of the terms page (`terms.html#sms`). The landing page links to agents and Messages, with privacy and terms in its footer. There is no standalone account portal or Sign in link.
 - `<site>/static/`: files copied into `dist/` as they are (`robots.txt`; add `_redirects` or
   `.well-known/*` files here).
 - `skills/<name>/SKILL.md`: the Agent Skills file per site (`ntwrk-party`, `slop-date`, `peon-biz`,
@@ -36,8 +36,8 @@ Ages on the pages equal the platform registry (`packages/platform/src/apps.ts` `
 - `skills.config.ts`: the one backend origin and the MCP URL template (`BACKEND_ORIGIN`, `MCP_URL`;
   defaults `https://api.ntwrk.party` and `https://{domain}/mcp`). Each site is its own MCP endpoint
   (the router forwards `/mcp` with the site's signed host); the backend origin's `/mcp` names no app. The build fills `{{BACKEND_ORIGIN}}`,
-  `{{MCP_URL}}`, `{{TEXT_LINE}}` and `{{TURNSTILE_SITE_KEY}}` in pages and skills, and fails on a leftover `{{`.
-- `shared/`: the only JavaScript. `join.ts`, `settings.ts`, `auth.ts`, `turnstile.ts` and `demo.ts`
+  `{{MCP_URL}}`, `{{TEXT_LINE}}`, `{{MESSAGES_HREF}}` and `{{TURNSTILE_SITE_KEY}}` in pages and skills, and fails on a leftover `{{`.
+- `shared/`: the only JavaScript. `join.ts`, `auth.ts`, `turnstile.ts` and `demo.ts`
   find elements by `data-*` attributes, so each site writes its own markup and copy.
 - `sites.ts`: the site list and the build (Bun's HTML bundler, then `static/`, `_headers` and the
   skill files into `dist/`).
@@ -55,8 +55,7 @@ shows on a phone or a Mac only. The page is black and white with one colour per 
 (`--l-hi` in each `styles.css`); `shared/landing.css` has the layout and the font (Host Grotesk, OFL,
 `shared/fonts/`). Logos are in `shared/logos/` (from @lobehub/icons-static-svg, MIT; the Messages
 logo from simple-icons). Link behaviour: [docs/research/2026-10-10-agent-deep-links.md](../docs/research/2026-10-10-agent-deep-links.md).
-The pages work without JavaScript (links open the agent; the prompt stays selectable). Join and
-settings need it and say so in `<noscript>`.
+The pages work without JavaScript (links open the agent; the prompt stays selectable). Join needs it and say so in `<noscript>`.
 
 ## Commands
 
@@ -85,6 +84,10 @@ other POST with 415. `sites/test/contract.test.ts` runs the client against `crea
 `POST /api/join` sends `consent.wording` as the exact text of the `[data-consent-wording]`
 element. A test checks that it equals the platform's canonical text for the app.
 
+Members continue in their agent or text conversation. STOP and leave remain text commands.
+Export and deletion requests use help@ntwrk.party. The authenticated backend APIs remain available
+for service integrations; the sites do not expose a member dashboard.
+
 peon.biz sends the "Looking for work" or "Hiring for a team" choice as the first item of
 `interests` (`looking-for-work` or `hiring`), because the contract has no field for it.
 
@@ -92,7 +95,7 @@ peon.biz sends the "Looking for work" or "Hiring for a team" choice as the first
 
 ## Turnstile
 
-The phone step on join and settings mounts Cloudflare Turnstile when the build has
+The phone step on join mounts Cloudflare Turnstile when the build has
 `TURNSTILE_SITE_KEY` (a public site key). The client sends the token as `turnstileToken`. Without a
 key (local dev) there is no widget and no token. The CSP allows `https://challenges.cloudflare.com`
 for scripts and frames only.
@@ -111,3 +114,7 @@ hand, deploys need founder approval and go through `scripts/wrangler.sh` with `N
 All four projects are in the ntwrk.party Cloudflare account (its id is `CLOUDFLARE_ACCOUNT_ID`, from
 the environment or the CI variable). Each answers on `<project>.pages.dev`, which the backend accepts as that app's host; slop.date
 and friends.help DNS (another account) point there. Details: [docs/deploy.md](../docs/deploy.md).
+
+### Authenticated Join drafts
+
+Network and Friends may claim an approved assistant draft after normal phone sign-in through a same-origin `POST /oauth/signup-draft` (the existing signed OAuth router). Only first name and home city fill existing editable controls. The draft is optional and recoverable until completion or expiry; missing, expired or revoked drafts leave the ordinary form usable. Human edits win over delayed responses. An opaque marker returned by the normal authenticated account API binds form state to the account; authentication transitions clear prior values and reject old in-flight responses. No browser storage caches these facts across accounts. Updated forms also send their reviewed account marker with Join; the server rejects a changed account before any age, person, membership or consent write. The page clears the old fields and loads the current account for review without another phone code. Older clients may omit the marker; it never authorizes a request. Age and the app text-consent checkbox remain for the person. No personal fields or credentials are carried in a URL. Slop and Peon do not use this path.

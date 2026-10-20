@@ -5,7 +5,7 @@
 //   data-min-age="13"           the page's default when /api/app cannot be read
 // Steps: loading, invite, phone, code, profile, member, blocked, done.
 import { api, type ApiError, type Me } from "./api.ts";
-import { prefillJoin, clearJoinDraft } from "./prefill.ts";
+import { prefillJoin } from "./prefill.ts";
 import { mountAuth } from "./auth.ts";
 import { $, busy, fill, formatDate, message, plainText, ready, setError, showStep, when } from "./ui.ts";
 
@@ -41,7 +41,50 @@ function route(root: HTMLElement, me: Me, inviteOnly: boolean): void {
 }
 
 export async function mountJoin(root: HTMLElement): Promise<void> {
+  const profile = $(root, 'form[data-form="profile"]') as HTMLFormElement | null;
+  // Block native GET submission even while the optional draft is loading.
+  profile?.addEventListener("submit", event => event.preventDefault());
+  // Never reuse browser-restored Join values from an earlier authenticated account.
+  profile?.reset();
   prefillJoin(root);
+  const edited = new Set<string>();
+  profile?.addEventListener("input", ev => { const input = ev.target as HTMLInputElement; if (input.name) edited.add(input.name); });
+  profile?.addEventListener("change", ev => { const input = ev.target as HTMLInputElement; if (input.name) edited.add(input.name); });
+  let generation = 0, account: string | undefined, loading = false;
+  const resetAccount = () => {
+    generation++; loading = false; account = undefined; edited.clear(); profile?.reset();
+  };
+  const prefill = async (me: Me) => {
+    if (!me.canJoin || !["friends", "ntwrk"].includes(me.app) || !me.signupView || loading || !profile) return;
+    if (account && account !== me.signupView) resetAccount();
+    account = me.signupView;
+    const requestGeneration = generation, requestAccount = account;
+    loading = true;
+    try {
+      const response = await fetch("/oauth/signup-draft", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
+      if (!response.ok || requestGeneration !== generation) return;
+      const { draft, signupView } = await response.json();
+      if (requestGeneration !== generation) return;
+      // A cookie may have changed in another tab while this response was in flight.
+      const current = await api.me();
+      if (requestGeneration !== generation) return;
+      if (signupView !== requestAccount || !current.ok || current.data.signupView !== requestAccount) {
+        resetAccount();
+        if (current.ok) { route(root, current.data, inviteOnly); void prefill(current.data); }
+        else start(root);
+        return;
+      }
+      if (!draft || typeof draft.firstName !== "string" || draft.firstName.length > 50) return;
+      for (const name of ["firstName", "homeCity"] as const) {
+        const input = profile.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null;
+        const value = draft[name];
+        if (!input || input.value || edited.has(name) || typeof value !== "string") continue;
+        if (name === "homeCity" && value !== "sf" && value !== "nyc") continue;
+        input.value = value;
+      }
+    } catch { /* Keep the draft server-side so a same-account revisit can retry. */ }
+    finally { if (requestGeneration === generation) loading = false; }
+  };
   showStep(root, "loading");
   const [app, me] = await Promise.all([api.app(), api.me()]);
   const inviteOnly = app.ok ? app.data.joinMode === "invite" : root.dataset.joinMode === "invite";
@@ -50,6 +93,7 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
 
   if (me.ok) {
     route(root, me.data, inviteOnly);
+    void prefill(me.data);
   } else if (inviteOnly) {
     showStep(root, "invite");
   } else {
@@ -57,12 +101,13 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
   }
   ready(root);
 
-  root.querySelectorAll('[data-action="restart"]').forEach((b) => b.addEventListener("click", () => start(root)));
+  root.querySelectorAll('[data-action="restart"], [data-action="change-number"]').forEach((b) => b.addEventListener("click", () => { resetAccount(); start(root); }));
 
   mountAuth(root, async () => {
+    resetAccount();
     flowError(root, "");
     const again = await api.me();
-    if (again.ok) route(root, again.data, inviteOnly);
+    if (again.ok) { route(root, again.data, inviteOnly); void prefill(again.data); }
     else {
       start(root);
       flowError(root, message(root, again.error));
@@ -97,24 +142,43 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
     setError(form, "");
     const interests = f.getAll("interests").map(String).filter(Boolean);
     const body = {
+      ...(account ? { signupView: account } : {}),
       firstName,
       age,
+      ...(str("homeCity") ? { homeCity: str("homeCity") as "nyc" | "sf" } : {}),
       ...(str("neighborhood") ? { neighborhood: str("neighborhood") } : {}),
       ...(zip ? { zip } : {}),
       ...(interests.length ? { interests } : {}),
       ...(str("about") ? { about: str("about") } : {}),
       consent: { sms: true as const, wording: plainText($(form, "[data-consent-wording]")) },
     };
+    const submitGeneration = generation, submitAccount = account;
     const res = await busy(form, () => api.join(body));
+    if (submitGeneration !== generation) return;
     if (res.ok) {
-      clearJoinDraft();
+      generation++; loading = false;
+      // Deliberate successful Join ends the draft, without changing the normal Join contract.
+      if (submitAccount) void fetch("/oauth/signup-draft/discard", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ signupView: submitAccount }) }).catch(() => {});
       fill(root, { firstName: res.data.membership?.firstName ?? firstName });
+      const done = $(root, '[data-step="done"]');
+      if (new URLSearchParams(location.search).get("via") === "agent" && done && !done.querySelector("[data-agent-return]")) {
+        const next = document.createElement("p");
+        next.dataset.agentReturn = "";
+        next.textContent = "Go back to the same chat to finish setting up your profile.";
+        done.append(next);
+      }
       showStep(root, "done");
+    } else if (res.error === "account_changed") {
+      resetAccount();
+      const changedGeneration = generation, current = await api.me();
+      if (changedGeneration !== generation) return;
+      if (current.ok) { route(root, current.data, inviteOnly); void prefill(current.data); }
+      else start(root);
+      flowError(root, message(root, "account_changed"));
     } else if (res.error === "under_age" || res.error === "invite_only" || res.error === "review") {
-      clearJoinDraft();
       block(root, res.error);
     } else if (res.error === "unauthorized") {
-      start(root);
+      resetAccount(); start(root);
       flowError(root, message(root, "unauthorized"));
     } else {
       setError(form, message(root, res.error));

@@ -1,9 +1,11 @@
 // Metrics for a friends.help run (harness side: they read hidden truth). Per-member rates use REAL
 // members: true adults who are not adversaries. Definitions are in the results doc.
+import { gini } from "@thenetwork/core";
+export { gini };
 import type { MemberId } from "@thenetwork/core";
 import { canBeMatched } from "@thenetwork/core";
 import type { HarmKind } from "./oracle.ts";
-import { hoodOf, isReal, type FriendsPersona } from "./persona.ts";
+import { hoodOf, isReal } from "./persona.ts";
 import { visibleRedFlag, weekTime } from "./snapshot.ts";
 import { pk, type FriendsRunResult } from "./world.ts";
 
@@ -56,13 +58,6 @@ export interface FriendsMetrics {
   selfHangouts: number;
 }
 
-export function gini(xs: number[]): number {
-  const v = [...xs].sort((a, b) => a - b), n = v.length, s = v.reduce((a, b) => a + b, 0);
-  if (!n || !s) return 0;
-  let cum = 0;
-  for (let i = 0; i < n; i++) cum += (i + 1) * v[i]!;
-  return (2 * cum) / (n * s) - (n + 1) / n;
-}
 const div = (a: number, b: number) => (b ? a / b : 0);
 const median = (xs: number[]) => { if (!xs.length) return null; const v = [...xs].sort((a, b) => a - b); const m = v.length >> 1; return v.length % 2 ? v[m]! : (v[m - 1]! + v[m]!) / 2; };
 
@@ -157,7 +152,7 @@ export function friendsMetrics(res: FriendsRunResult): FriendsMetrics {
   const byAdvKind: Record<string, number> = {};
   for (const c of contacts) {
     for (const [x, y] of [[c.a, c.b], [c.b, c.a]] as const) {
-      const px = O.p(x), py = O.p(y);
+      const px = O.p(x);
       if (!realIds.has(y)) continue;
       if (seenC.has(`${x}>${y}`)) continue;
       seenC.add(`${x}>${y}`);

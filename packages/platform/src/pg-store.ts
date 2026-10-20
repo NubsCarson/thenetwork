@@ -20,9 +20,9 @@ const consent = (r: Row): ConsentEvent => ({
   e164: r.e164, app: r.app_id ?? null, line: r.line ?? null, state: r.state, source: r.source, wording: r.wording ?? null,
   wordingVersion: r.wording_version ?? null, ref: r.ref ?? null, at: ms(r.at)!,
 });
-const pendingRow = (r: Row): PendingText => ({ phoneHash: r.phone_hash, kind: r.kind, app: r.app_id, name: r.name ?? null, age: r.age ?? null, at: ms(r.at)! });
+const pendingRow = (r: Row): PendingText => ({ phoneHash: r.phone_hash, kind: r.kind, app: r.app_id, name: r.name ?? null, age: r.age ?? null, ...(r.home_city ? { homeCity: r.home_city } : {}), at: ms(r.at)! });
 const challenge = (r: Row): OtpChallenge => ({
-  id: String(r.id), app: r.app_id, e164: r.e164, provider: r.provider, providerRef: r.provider_ref ?? null, codeHash: r.code_hash ?? null, attempts: r.attempts,
+  id: String(r.id), app: r.app_id, e164: r.e164, provider: r.provider, providerRef: r.provider_ref ?? null, providerChatId: r.provider_chat_id ?? null, codeHash: r.code_hash ?? null, attempts: r.attempts,
   createdAt: ms(r.created_at)!, expiresAt: ms(r.expires_at)!, consumedAt: ms(r.consumed_at),
 });
 const phoneChange = (r: Row): PhoneChange => ({
@@ -84,12 +84,26 @@ export class PgPeopleStore implements PeopleStore {
     const [r] = await this.sql`select lowest_age from platform.age_floor where phone_hash = ${phoneHash}`;
     return r ? (r.lowest_age as number) : undefined;
   }
+  private ageTail: Promise<unknown> = Promise.resolve();
+  private ageCleanup?: (phoneHash: string, age: number) => Promise<void>;
+  setAgeFloorCleanup(fn: (phoneHash: string, age: number) => Promise<void>) { this.ageCleanup = fn; }
+  withPhoneAgeGuard<T>(phoneHash: string, fn: () => Promise<T>): Promise<T> {
+    // Separate from withLock's join queue: no recursive lockTail wait. Waiters reserve no connection.
+    // Normal pools have four connections: join lock + age lock + ordinary queries fit without a nested reservation queue.
+    const run = this.ageTail.then(() => this.advisory(`phone-age:${phoneHash}`, fn), () => this.advisory(`phone-age:${phoneHash}`, fn));
+    this.ageTail = run.catch(() => {});
+    return run;
+  }
   async noteAgeFloor(phoneHash: string, age: number, at: number) {
-    const [r] = await this.sql`insert into platform.age_floor (phone_hash, lowest_age, at) values (${phoneHash}, ${age}, ${ts(at)})
-      on conflict (phone_hash) do update set lowest_age = least(platform.age_floor.lowest_age, excluded.lowest_age),
-        at = case when excluded.lowest_age < platform.age_floor.lowest_age then excluded.at else platform.age_floor.at end
-      returning lowest_age`;
-    return r!.lowest_age as number;
+    return this.withPhoneAgeGuard(phoneHash, async () => {
+      const [r] = await this.sql`insert into platform.age_floor (phone_hash, lowest_age, at) values (${phoneHash}, ${age}, ${ts(at)})
+        on conflict (phone_hash) do update set lowest_age = least(platform.age_floor.lowest_age, excluded.lowest_age),
+          at = case when excluded.lowest_age < platform.age_floor.lowest_age then excluded.at else platform.age_floor.at end
+        returning lowest_age`;
+      const lowest = r!.lowest_age as number;
+      await this.ageCleanup?.(phoneHash, lowest);
+      return lowest;
+    });
   }
   async clearAgeFloor(phoneHash: string) {
     await this.sql`delete from platform.age_floor where phone_hash = ${phoneHash}`;
@@ -179,8 +193,8 @@ export class PgPeopleStore implements PeopleStore {
   }
 
   async putChallenge(c: Omit<OtpChallenge, "id">) {
-    const [r] = await this.sql`insert into platform.otp_challenges (app_id, e164, provider, provider_ref, code_hash, attempts, created_at, expires_at, consumed_at)
-      values (${c.app}, ${c.e164}, ${c.provider}, ${c.providerRef}, ${c.codeHash}, ${c.attempts}, ${ts(c.createdAt)}, ${ts(c.expiresAt)}, ${ts(c.consumedAt)}) returning id`;
+    const [r] = await this.sql`insert into platform.otp_challenges (app_id, e164, provider, provider_ref, provider_chat_id, code_hash, attempts, created_at, expires_at, consumed_at)
+      values (${c.app}, ${c.e164}, ${c.provider}, ${c.providerRef}, ${c.providerChatId ?? null}, ${c.codeHash}, ${c.attempts}, ${ts(c.createdAt)}, ${ts(c.expiresAt)}, ${ts(c.consumedAt)}) returning id`;
     return String(r!.id);
   }
   async latestChallenge(app: AppId, e164: string) {
@@ -255,8 +269,8 @@ export class PgPeopleStore implements PeopleStore {
   async putPending(p: PendingText) {
     await this.sql.begin(async tx => {
       if (p.kind !== "share") await tx`delete from platform.pending_texts where phone_hash = ${p.phoneHash} and kind = ${p.kind}`;
-      await tx`insert into platform.pending_texts (phone_hash, kind, app_id, name, age, at) values (${p.phoneHash}, ${p.kind}, ${p.app}, ${p.name}, ${p.age}, ${ts(p.at)})
-        on conflict (phone_hash, kind, app_id) do update set name = excluded.name, age = excluded.age, at = excluded.at`;
+      await tx`insert into platform.pending_texts (phone_hash, kind, app_id, name, age, home_city, at) values (${p.phoneHash}, ${p.kind}, ${p.app}, ${p.name}, ${p.age}, ${p.homeCity ?? null}, ${ts(p.at)})
+        on conflict (phone_hash, kind, app_id) do update set name = excluded.name, age = excluded.age, home_city = excluded.home_city, at = excluded.at`;
     });
   }
   async deletePending(phoneHash: string, kind?: PendingKind, app?: AppId) {

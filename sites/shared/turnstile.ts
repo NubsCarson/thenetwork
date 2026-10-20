@@ -12,9 +12,12 @@ interface TurnstileApi {
   reset(id?: string): void;
 }
 
+export type TurnstileState = "pending" | "failed" | "ready";
+
 export interface TurnstileHandle {
   /** The current token, or undefined while the check runs or after it failed. One token per request. */
   token(): string | undefined;
+  state(): TurnstileState;
   /** Ask for a new token (after every request: a token works once). */
   reset(): void;
 }
@@ -39,28 +42,35 @@ function load(): Promise<TurnstileApi | null> {
 }
 
 /** Mounts the widget in the form's [data-turnstile] element. Returns null when Turnstile is off for this page. */
-export function mountTurnstile(form: HTMLFormElement): TurnstileHandle | null {
+export function mountTurnstile(form: HTMLFormElement, onState?: (state: TurnstileState) => void): TurnstileHandle | null {
   const key = siteKey();
   const box = form.querySelector<HTMLElement>("[data-turnstile]");
   if (!key || !box) return null;
   let current: string | undefined;
+  let state: TurnstileState = "pending";
+  const update = (next: TurnstileState, token?: string) => {
+    current = token;
+    state = next;
+    onState?.(next);
+  };
   let id: string | undefined;
   let api: TurnstileApi | null = null;
   void load().then((t) => {
     api = t;
-    if (!t) return;
+    if (!t) { update("failed"); return; }
     id = t.render(box, {
       sitekey: key,
       action: "otp_start",
-      callback: (tok: string) => (current = tok),
-      "expired-callback": () => (current = undefined),
-      "error-callback": () => (current = undefined),
+      callback: (tok: string) => update("ready", tok),
+      "expired-callback": () => update("pending"),
+      "error-callback": () => update("failed"),
     });
   });
   return {
     token: () => current,
+    state: () => state,
     reset: () => {
-      current = undefined;
+      update("pending");
       if (api && id) api.reset(id);
     },
   };

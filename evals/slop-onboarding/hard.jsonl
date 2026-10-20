@@ -158,3 +158,7 @@
 {"text":"a guy","asked":"gender","expect":{"gender":"man"}}
 {"text":"a trans woman, into men","asked":"orientation","expect":{"gender":"woman","seeks":["man"]}}
 {"text":"I'd say a man looking for women","asked":"orientation","expect":{"gender":"man","seeks":["woman"]}}
+{"text":"I date in SF and NYC within 50 miles","expect":{"distance":{"mode":"multi","markets":["nyc","sf"],"miles":50}}}
+{"text":"Within 50 miles, I date in SF and NYC","expect":{"distance":{"mode":"multi","markets":["nyc","sf"],"miles":50}}}
+{"text":"I date in SF and NYC. My distance limit is 50 miles.","expect":{"distance":{"mode":"multi","markets":["nyc","sf"],"miles":50}}}
+{"text":"I date in SF and NYC","expect":{"distance":{"mode":"multi","markets":["nyc","sf"]}}}

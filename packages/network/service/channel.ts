@@ -1,3 +1,4 @@
+import type { ApprovedRelayPhoto } from "../../core/src/svc/contract.ts";
 // Outbound channels for the production service (service.ts). The Network composes every message;
 // a ChannelAdapter only delivers what the Network already decided to send.
 //  - DryRunAdapter (the default): nothing leaves the machine. The service stores each send in
@@ -28,6 +29,7 @@ export interface Outbound {
   body: string;
   /** HTTPS links to attachments (a photo). */
   mediaUrls?: string[];
+  approvedPhotos?: ApprovedRelayPhoto[];
   /** reply: an answer to the member's own message; compliance: STOP/HELP confirmations; proactive; transactional: everything else. */
   kind: MessageKind;
   type?: string;
@@ -175,7 +177,8 @@ export class BlooioAdapter implements ChannelAdapter {
     const checks: AppChecks = {
       live: () => this.live,
       // A relayed item still goes after the date (the thread stays open for a week); a closed match stops it.
-      stale: row => !!row.oppId && (row.id.startsWith("relay:") ? (rt.net.opps.get(row.oppId)?.stage ?? "closed") === "closed" : CLOSED_STAGES.has(rt.net.opps.get(row.oppId)?.stage ?? "")),
+      stale: async row => row.id.startsWith("ntf_") ? !await rt.notificationCurrent(row.id)
+        : !!row.oppId && (row.id.startsWith("relay:") ? (rt.net.opps.get(row.oppId)?.stage ?? "closed") === "closed" : CLOSED_STAGES.has(rt.net.opps.get(row.oppId)?.stage ?? "")),
       optedOut: row => rt.optedOut(row.id, row.memberId as MemberId | undefined, row.to),
       // A direct text to someone who is not a member of this app (no member on the row, none at the address)
       // is fixed copy: the member policy has nobody to check. Consent, quiet hours, caps and the leak guard still apply.
@@ -196,7 +199,9 @@ export class BlooioAdapter implements ChannelAdapter {
         if (row.id.startsWith("relay:")) await tx`select id from network.network_state where id=${rt.pg.id} for share`;
       },
       // A relayed item: its match and both members are read again inside the admission transaction (runtime.ts).
-      admit: (row, tx) => row.id.startsWith("relay:") ? rt.relayAdmission(tx, row) : Promise.resolve({ ok: true as const }),
+      admit: (row, tx) => row.approvedPhotos?.length && this.name !== "eliza_cloud"
+        ? Promise.resolve({ ok: false as const, reason: "approved_photos_require_cloud" })
+        : row.id.startsWith("relay:") ? rt.relayAdmission(tx, row) : Promise.resolve({ ok: true as const }),
       capTake: row => rt.capTake(row.id, row.memberId as MemberId),
       capRelease: row => rt.capRelease(row.id),
     };
@@ -214,11 +219,14 @@ export class BlooioAdapter implements ChannelAdapter {
       for (const m of msgs) out.set(m.id, "refused_not_approved");
       return out;
     }
-    const go = msgs.filter(m => (m.to ? true : (out.set(m.id, "failed_no_address"), false)));
+    const go = msgs.filter(m => {
+      if (m.approvedPhotos?.length && this.name !== "eliza_cloud") { out.set(m.id, "refused_photo_transport"); return false; }
+      return m.to ? true : (out.set(m.id, "failed_no_address"), false);
+    });
     await this.queue.enqueue(tx, go.map(m => ({
       // A member the unit forgets gets the one decline as a text to a non-member: nothing about them is kept.
       id: m.id, ...(forgotten.has(m.memberId) ? {} : { memberId: m.memberId }), to: m.to!, kind: m.kind, text: m.body,
-      ...(m.mediaUrls?.length ? { mediaUrls: m.mediaUrls } : {}), ...(m.oppId ? { oppId: m.oppId } : {}), city: this.city,
+      ...(m.mediaUrls?.length ? { mediaUrls: m.mediaUrls } : {}), ...(m.approvedPhotos?.length ? { approvedPhotos: m.approvedPhotos } : {}), ...(m.oppId ? { oppId: m.oppId } : {}), city: this.city,
     })));
     return out;
   }

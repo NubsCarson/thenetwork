@@ -14,7 +14,7 @@ This package holds what the apps share: people, verified phones, memberships per
 | `src/age.ts` | `canJoinApp`, `canMatchInApp`, lowest age wins (built on `packages/core/src/policy.ts`) |
 | `src/phone.ts` | E.164 for US and Canadian numbers only (no Caribbean, toll-free or premium codes), masking, keyed hashes |
 | `src/consent.ts` | STOP (and opt-outs in the person's own words, English and Spanish) for every app, `leave <app>` for one, START for one app, `PLATFORM_STOP_SCOPE=app` for an app's own line |
-| `src/proxy.ts` | The trusted proxy: the signer the site routers use (HMAC over method, path, host, client IP, time), the check the API runs, and a complete router (`routeSiteRequest`) |
+| `src/proxy.ts` | The trusted proxy: header classification, signing (HMAC over method, path, host, client IP, time), and signature verification. The deployed router is `deploy/router.ts`. |
 | `src/store.ts`, `src/pg-store.ts` | `PeopleStore`: `MemoryPeopleStore` and `PgPeopleStore` (the `platform` schema) |
 | `src/otp.ts` | `OtpService` (3 sends per number per hour, 10 per IP per hour, 30 s gap, 10 min expiry, 5 tries), `TwilioVerifyProvider`, `DevConsoleProvider` |
 | `src/turnstile.ts` | Cloudflare Turnstile check; a dev bypass that refuses production |
@@ -29,6 +29,12 @@ The schema is in `packages/observatory/db/migrations/` (0003 platform, 0004 app 
 
 Leaving an app, deleting everything and the join rollback call `notify.forget_data` (packages/notify/db/retention.sql, migration 9003) in the same transaction. Every database a `PgPeopleStore` uses must run the full migrate list, Notify included (9002 and 9003); on a database without them, leave and join rollback fail.
 
+An optional explicit `homeCity` is `nyc` or `sf`; exact city labels such as
+"New York" and "Bay Area" normalize to those values. An entire neighborhood
+field that names one of these regions also states home. Conflicting explicit
+values are invalid. ZIP codes and other neighborhood names never infer a city.
+Omitted home keeps the legacy runtime default.
+
 ## Public API
 
 `createPublicApi({ store, otp, turnstile, hostMap, onJoin, onStop, onForget, onExport, ... })` returns a fetch handler. It answers `undefined` for paths outside `/api`, so any `Bun.serve` can mount it. The Network service mounts it on `PLATFORM_API_PORT` (8790) and supplies the hooks.
@@ -39,7 +45,7 @@ Leaving an app, deleting everything and the join rollback call `notify.forget_da
 | `POST /api/auth/otp/verify {phone, code}` | `{ok:true}` and a session cookie, or `400 invalid_code` |
 | `POST /api/auth/logout` | `{ok:true}`, cookie cleared |
 | `GET /api/me` | 401, or `{app, phoneMasked, membership, smsOptedIn, canJoin, reason?}` |
-| `POST /api/join {firstName, age, neighborhood?, zip?, interests?, about?, consent: {sms: true, wording? , version?}}` | `{ok:true, membership}` or `400 under_age \| invite_only \| invalid \| consent_wording`. The wording must be the app's canonical text (or its version) from `GET /api/app`. |
+| `POST /api/join {firstName, age, homeCity?, neighborhood?, zip?, interests?, about?, consent: {sms: true, wording? , version?}}` | `{ok:true, membership}` or `400 under_age \| invite_only \| invalid \| consent_wording`. The wording must be the app's canonical text (or its version) from `GET /api/app`. |
 | `POST /api/me/share {fromApp, fields}` | Stores a base-profile grant (`first_name`, `city`, `age_band`, `interests`). No site shows it. |
 | `GET /api/me/export` | This app's data only |
 | `POST /api/me/share/revoke {fromApp}` | Revokes a grant. The same answer either way. |
@@ -60,7 +66,7 @@ The app comes from the host a site router signed (`src/proxy.ts`, `PLATFORM_PROX
 | `PLATFORM_PROXY_SECRET` | The secret the site routers sign with. Required in production (32+ characters). |
 | `PLATFORM_SESSION_SECRET` | The key for stored session hashes. Required in production (32+ characters). |
 | `PLATFORM_STOP_SCOPE` | Unset: STOP stops every app. `app`: STOP on an app's own line stops that app only. |
-| `OTP_PROVIDER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | `twilio` uses Twilio Verify; anything else uses the dev console (codes in the log; `PLATFORM_ENV=dev` only) |
+| `OTP_PROVIDER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | `twilio` uses Twilio Verify; explicit `blooio` uses the configured Blooio sender. Unset/dev_console uses the dev console in dev only; unknown values fail. |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile; without it, the dev bypass (`PLATFORM_ENV=dev` only) |
 | `CLEF_RATINGS` | The slop.date photo rater. Unset or `on`: on (founder, 2026-10-09). `off`: off; any other value also leaves it off. Off: photos still work, nothing is rated. |
 | `CLOUDFLARE_AI_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLEF_MODEL` | Workers AI for the rater. Without the token and the account id nothing is rated (status `off_env`). |
@@ -88,3 +94,23 @@ The platform's unit tests were deleted on 2026-10-08 (founder decision: simulati
 
 - Not built: the carrier lookup (VoIP, landline, recent port), Turnstile on the sites, the share UI, an engine view that reads share grants, the demo replay, and the app-specific tables (peon orgs, roles, applications; slop dating preferences; `facets.sensitive_class`).
 - Code imports `@thenetwork/platform` by relative path.
+
+### Optional Blooio OTP transport
+
+`OTP_PROVIDER=blooio` requires `BLOOIO_API_KEY` and the existing exact `BLOOIO_FROM`
+(or matching `BLOOIO_FROM_NUMBER`). No sender is selected automatically. Twilio remains
+the normal deployed configuration. This alternative uses the existing cryptographic
+six-digit code, app/phone-bound hash, ten-minute expiry, attempt/rate limits and atomic
+consumption. Verification refuses a challenge created by another provider.
+
+The code is sent directly through the canonical Blooio v4 client, outside conversation
+history and the ordinary message queue. It is never logged. A queued receipt is provider
+acceptance, not delivery. Failed, malformed or uncertain responses create no usable
+challenge and trigger no resend or Twilio fallback. An uncertain send may still arrive
+with an unusable code; the person must wait for the normal resend interval.
+
+The cost ledger records accepted requests as `otp_verify`, provider `blooio`, using
+`COST_SMS_USD` as an estimate with `pricing: sms_estimate`. Review that configured rate
+before activation. Actual billing, sender permission and delivery remain unverified.
+Controlled HTTP/Postgres tests do not establish managed Verify support or live reachability.
+An owned live code and OAuth test needs separate sender/configuration approval.

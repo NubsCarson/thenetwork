@@ -41,8 +41,8 @@ describe.skipIf(!pgAvailable)("migrations (Postgres)", () => {
     const url = await emptyDb("upgrade"); urls.push(url);
     const sql = new SQL({ url, max: 1 });
     try {
-      await sql.unsafe(await Bun.file(new URL("../../observatory/db/schema.sql", import.meta.url).pathname).text());
-      await sql.unsafe(await Bun.file(new URL("../../network/db/network-state.sql", import.meta.url).pathname).text());
+      await sql.unsafe(await Bun.file(new URL("../../observatory/db/schema.sql", import.meta.url)).text());
+      await sql.unsafe(await Bun.file(new URL("../../network/db/network-state.sql", import.meta.url)).text());
       await sql`insert into network.members (id, name, home_city, age, joined_at) values ('a', 'A', 'nyc', 34, now()), ('b', 'B', 'nyc', null, now())`;
       // A legacy member texts from a phone; another from an Apple ID (not a phone: left as it is).
       await sql`insert into network.channel_identities (member_id, channel, address, is_primary) values ('a', 'imessage', '+12125550177', true), ('b', 'imessage', 'b@example.com', true)`;
@@ -162,7 +162,7 @@ describe.skipIf(!pgAvailable)("migrations (Postgres)", () => {
       const allowed = (role: string, rel: string): boolean => {
         if (["platform.apps", "platform.cities", "platform.networks"].includes(rel)) return true;
         const app = role === "network_observatory" ? "ntwrk" : role.slice("network_observatory_".length);
-        if (apps.includes(app) && [`network.network_state_console_${app}`, `platform.person_blocks_${app}`].includes(rel)) return true;
+        if (apps.includes(app) && [`network.network_state_console_${app}`, `platform.person_blocks_${app}`, `platform.matching_ages_${app}`].includes(rel)) return true;
         if (role === "network_observatory") return ["network.staff_audit", "platform.staff_roles", "network.ops_alerts", "network.ops_alert_posts"].includes(rel);
         if (role === "network_observatory_audit") return rel === "network.staff_audit";
         if (role === "network_observatory_cross_app") return ["network.network_state_console_cross_app", "platform.memberships", "platform.people", "platform.person_blocks"].includes(rel);

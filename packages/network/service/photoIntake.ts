@@ -18,6 +18,7 @@
 //     strips metadata, stores it privately and rates the member (adults only).
 import type { Accounts } from "../../platform/src/accounts.ts";
 import type { AppId } from "../../platform/src/apps.ts";
+import { readCapped } from "../../platform/src/body.ts";
 import { PHOTO_CONSENT, PHOTO_MAX_BYTES, type PhotoRefusal, type PhotoService } from "../../platform/src/photos.ts";
 import type { PeopleStore } from "../../platform/src/store.ts";
 import { DAY } from "@thenetwork/core";
@@ -32,12 +33,12 @@ const LIVE = new Set(["active", "paused", "onboarding"]);
 /** Draft copy (needs the founder's approval and the CONTRIBUTING 3.5 videos). */
 export const PHOTO_TEXT = {
   ask: `Before I keep any photos: ${PHOTO_CONSENT.text} Reply YES PHOTOS to agree, then send the photo again. Reply NO PHOTOS and I keep none.`,
-  agreed: "Thanks. Send your photos any time. You can see or delete them at slop.date/settings.",
+  agreed: "Thanks. Send your photos any time. To request a copy or deletion, email help@ntwrk.party.",
   declined: "OK. I will not keep your photos.",
   stored: (n: number) => (n === 1 ? "Got it. I saved your photo privately." : `Got it. I saved ${n} photos privately.`),
   notAdult: "I can't keep photos for you here.",
   badPhoto: "I could not use that photo. Send a JPEG, PNG or WebP photo of up to 8 MB.",
-  tooMany: "You have the most photos I can keep. Delete one at slop.date/settings first.",
+  tooMany: "You have the most photos I can keep. Email help@ntwrk.party to request deletion before sending more.",
 } as const;
 
 /** The explicit answer to the photo consent ask: "YES PHOTOS" or "NO PHOTOS" (a bare yes or no is never taken). */
@@ -151,19 +152,5 @@ export async function fetchMediaCapped(url: string, maxBytes: number): Promise<U
   if (u.protocol !== "https:") return undefined;
   const res = await fetch(u, { redirect: "error", signal: AbortSignal.timeout(15_000) });
   if (!res.ok || !res.body) return undefined;
-  if (Number(res.headers.get("content-length") ?? "0") > maxBytes) return "too_large";
-  const parts: Uint8Array[] = [];
-  let n = 0;
-  const reader = res.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    n += value.length;
-    if (n > maxBytes) { await reader.cancel().catch(() => {}); return "too_large"; }
-    parts.push(value);
-  }
-  const out = new Uint8Array(n);
-  let at = 0;
-  for (const p of parts) { out.set(p, at); at += p.length; }
-  return out;
+  return readCapped(res, maxBytes);
 }

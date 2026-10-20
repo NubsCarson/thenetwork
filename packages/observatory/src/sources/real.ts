@@ -782,9 +782,14 @@ export class RealSource implements DataSource {
     return { ok: true, items: r.items.map(x => (x.memberId && minors.has(x.memberId) && x.text !== undefined ? (({ text: _t, ...rest }) => ({ ...rest, textHidden: "minor" as const }))(x) : x)) };
   }
 
-  async heldDecision(queue: HeldQueue, id: string, decision: "release" | "reject", reason: string, actor: string): Promise<ControlResult> {
+  async heldPhoto(id:string,actor:string,reason:string):Promise<Response> {
+    if(!this.service)return Response.json({error:"The Network photo service is unavailable."},{status:404});
+    return this.service.heldPhoto(actor,id,reason);
+  }
+
+  async heldDecision(queue: HeldQueue, id: string, decision: "release" | "reject", reason: string, actor: string, photoReviewToken?:string): Promise<ControlResult> {
     if (!this.service) return { ok: false, error: "real-world mode is read-only: set NETWORK_SERVICE_URL and NETWORK_SERVICE_TOKEN to act through the Network service", code: "read_only" };
-    return this.afterAction(await this.service.heldDecision(actor, queue, id, decision, reason));
+    return this.afterAction(await this.service.heldDecision(actor, queue, id, decision, reason, photoReviewToken));
   }
 
   /** Through the Network service (its staff API), never this connection. Without it: refused. */
@@ -876,7 +881,7 @@ export class RealSource implements DataSource {
   async snapshot(): Promise<WorldSnapshot> {
     if (!this.sql) throw new Error("not connected");
     this.tickClock();
-    return loadSnapshot(this.isolation === "rls_role" ? appBlocksSql(this.sql, this.app) : this.sql, this.store.clock.now, { app: this.app });
+    return loadSnapshot(this.isolation === "rls_role" ? appSnapshotSql(this.sql, this.app) : this.sql, this.store.clock.now, { app: this.app });
   }
 
   private async shadowRun(city?: City): Promise<ControlResult> {
@@ -931,14 +936,15 @@ const FEED_TYPES = [
 
 /**
  * The SQL client for the snapshot builder under an app's read login: every reference to
- * platform.person_blocks reads the app's own view instead (blocks between two members of this app).
+ * platform.person_blocks and platform.matching_ages read the app's own views instead.
  * The builder's queries are otherwise passed through unchanged.
  */
-export function appBlocksSql(sql: SQL, app: string): SQL {
-  const view = `platform.person_blocks_${app.replace(/[^a-z]/g, "")}`;
+export function appSnapshotSql(sql: SQL, app: string): SQL {
+  const suffix = app.replace(/[^a-z]/g, "");
   const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
-    if (!strings.some(x => x.includes("platform.person_blocks"))) return (sql as any)(strings, ...values);
-    const swapped = strings.map(x => x.replaceAll("platform.person_blocks", view));
+    if (!strings.some(x => x.includes("platform.person_blocks") || x.includes("platform.matching_ages"))) return (sql as any)(strings, ...values);
+    const swapped = strings.map(x => x.replaceAll("platform.person_blocks", `platform.person_blocks_${suffix}`)
+      .replaceAll("platform.matching_ages", `platform.matching_ages_${suffix}`));
     return (sql as any)(Object.assign(swapped, { raw: swapped }) as unknown as TemplateStringsArray, ...values);
   };
   return new Proxy(tag, { get: (_t, k) => { const v = (sql as any)[k]; return typeof v === "function" ? v.bind(sql) : v; } }) as unknown as SQL;

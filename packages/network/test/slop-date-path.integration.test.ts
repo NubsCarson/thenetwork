@@ -74,12 +74,42 @@ describe.skipIf(!pgAvailable)("slop.date: join to report after the date (Network
 
   test("join, onboard, review approval, mutual yes, date booked, check-in, report to the safety queue, pair kept apart", async () => {
     const clock = new SimClock(START);
+    // Only the explicitly requested arm may use the runner's real provider.
+    // The service receives its normal opt-in settings, never a test LLM.
+    const engineJudge = process.env.NETWORK_ENGINE_JUDGE === "1";
+    const judgeEnv = engineJudge ? {
+      NETWORK_ENGINE_JUDGE: "1",
+      NETWORK_ENGINE_JUDGE_MAX_REQUESTS: process.env.NETWORK_ENGINE_JUDGE_MAX_REQUESTS,
+      NETWORK_ENGINE_JUDGE_BUDGET_USD: process.env.NETWORK_ENGINE_JUDGE_BUDGET_USD,
+    } : {};
+    if (engineJudge) {
+      expect(judgeEnv.NETWORK_ENGINE_JUDGE_MAX_REQUESTS).toBe("12");
+      expect(Number(judgeEnv.NETWORK_ENGINE_JUDGE_BUDGET_USD)).toBe(0.25);
+    }
     const s = svc = new NetworkService({
-      url: URL_, clock, instance: "slop-date", log: () => {}, env: { PLATFORM_ENV: "dev" }, networks: [{ id: "ntwrk:nyc" }, { id: "slop:nyc" }],
+      url: URL_, clock, instance: "slop-date", log: () => {}, env: { PLATFORM_ENV: "dev", ...judgeEnv }, networks: [{ id: "ntwrk:nyc" }, { id: "slop:nyc" }],
       tokens: `admin:${ADMIN},reviewer:${REVIEWER},safety:${SAFETY}`, webhookSecret: SECRET, network: { seed: 1 }, photoStorage: null, notify: false,
       adapter: () => new DryRunAdapter(() => {}),
     });
     await s.start();
+    const judgeCost = async (phase: string) => {
+      const rows = await sql`select provider, detail->>'model' as model, count(*)::int as requests,
+        sum(cost_usd)::float8 as usd from network.cost_ledger
+        where app_id = 'slop' and kind = 'llm' and detail->>'purpose' = 'engine_judge'
+        group by provider, detail->>'model'` as { provider: string; model: string | null; requests: number; usd: number }[];
+      const requests = rows.reduce((n, row) => n + row.requests, 0);
+      const usd = rows.reduce((n, row) => n + row.usd, 0);
+      if (engineJudge) {
+        expect(requests).toBeGreaterThan(0);
+        expect(requests).toBeLessThanOrEqual(12);
+        expect(usd).toBeGreaterThan(0);
+        expect(usd).toBeLessThanOrEqual(0.25);
+        // A priced HTTP response is not proof of a valid parsed judge verdict.
+        console.log(JSON.stringify({ scope: "synthetic-slop-service-engine-judge-http", phase, requests, usd, providers: rows }));
+      } else {
+        expect(requests).toBe(0);
+      }
+    };
 
     // ---- Join slop by keyword on the shared line, then the onboarding asks.
     const people = [
@@ -108,6 +138,22 @@ describe.skipIf(!pgAvailable)("slop.date: join to report after the date (Network
       item = q.items?.find((x: any) => x.proposal.participants.includes(rae) && x.proposal.participants.includes(sam));
     }
     expect(item).toBeDefined();
+    await judgeCost("before-review");
+    if (engineJudge) {
+      const runs = await sql`select r.summary->'matchingJudge' as judge from network.matching_runs r
+        join network.opportunities o on o.run_id = r.id and o.app_id = r.app_id
+        where o.app_id = 'slop' and o.id = ${item.oppId}` as {
+          judge: { model?: string; calls: number; failures: number; verdicts: number; selected: number; judged: number };
+        }[];
+      expect(runs).toHaveLength(1);
+      const judge = runs[0]!.judge;
+      expect(judge.calls).toBeGreaterThan(0);
+      expect(judge.verdicts).toBeGreaterThan(0);
+      expect(judge.selected).toBeGreaterThan(0);
+      expect(judge.failures).toBe(0);
+      expect(judge.judged).toBe(judge.selected);
+      console.log(JSON.stringify({ scope: "synthetic-slop-service-matching-judge", ...judge }));
+    }
     // A reviewer's edit that talks about looks or a rating is refused on slop (photo ratings are never shown), and nothing is sent.
     for (const words of ["You're both really attractive, she's in the 73rd percentile.", "Similar looks level, good match.", "Top 10% photo rating."]) {
       const r = await (await staff(s, REVIEWER, "POST", `/apps/slop/review/${encodeURIComponent(item.oppId)}`, { decision: "edit", explanations: { [rae]: words }, secondsSpent: 5 })).json() as any;
@@ -191,6 +237,7 @@ describe.skipIf(!pgAvailable)("slop.date: join to report after the date (Network
     const byText = ((await (await staff(s, SAFETY, "GET", "/apps/slop/safety/reports")).json()) as any).reports.find((r: any) => r.subjectId === rae);
     expect(byText).toMatchObject({ kind: "unsafe", source: "message", status: "open", reporterId: sam });
     expect(net.eligible(rae as never)).toBe(false);
+    await judgeCost("after-complete-date-path");
   }, T);
 
   // Founder decision (2026-10-11, issue #22): a woman or a man who stays unclear about who they hope to

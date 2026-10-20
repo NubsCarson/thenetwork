@@ -19,12 +19,8 @@
 // The relay classifier rows use kind "other": migration 0020 allows only the kinds below in its check
 // constraint, and a dedicated `workers_ai_call` kind needs a new migration (the observatory owns them).
 //
-// LLM calls: the service has no production LLM client today. It never builds defaultLLM() or
-// llmUnderstand (the ConsentNetwork's `understand` is unset, so member texts are read by the offline
-// rules), and slop onboarding uses the engine's rule reader `extractSlopProfile` (no LLM reader). The
-// member conversation runs in Eliza, upstream. A service-side client added later must pass
-// `ledger.llmHooks(app, purpose)` with the real app and purpose (for example "understand",
-// "slop_onboarding"); packages/network/test/cost.integration.test.ts checks the row it writes.
+// NETWORK_ENGINE_JUDGE=1 creates a per-app recommenderLLM with llmHooks(app, "engine_judge").
+// The member conversation remains in Eliza; the service-side onboarding reader stays rules-only.
 import { randomUUID } from "node:crypto";
 import type { SQL } from "bun";
 import type { Clock } from "@thenetwork/core";
@@ -147,16 +143,18 @@ export class CostLedger {
     await this.o.sink.write([row]).catch(err => this.log(`[cost] a ${e.kind} row was not written: ${(err as Error).message}`));
   }
 
-  /** The OTP provider, with one otp_verify row per code sent by Twilio Verify (the dev console provider costs nothing). */
+  /** OTP acceptance estimate. Blooio uses the configured text rate, not a Twilio Verify charge. */
   meterOtp(p: OtpProvider): OtpProvider {
-    if (!p.name.startsWith("twilio")) return p;
+    if (!p.name.startsWith("twilio") && p.name !== "blooio") return p;
     const ledger = this;
     return {
       name: p.name,
       async send(e164: string, app: AppInfo) {
         const r = await p.send(e164, app);
         // Not awaited: the row's write never changes how long a login request takes (no enumeration by time).
-        void ledger.record({ app: app.id, kind: "otp_verify", provider: p.name, costUsd: ledger.rates.twilioVerifyUsd, unitCostUsd: ledger.rates.twilioVerifyUsd });
+        const rate = p.name === "blooio" ? ledger.rates.smsUsd : ledger.rates.twilioVerifyUsd;
+        void ledger.record({ app: app.id, kind: "otp_verify", provider: p.name, costUsd: rate, unitCostUsd: rate,
+          ...(p.name === "blooio" ? { detail: { pricing: "sms_estimate", acceptance: "provider" } } : {}) });
         return r;
       },
       ...(p.check ? { check: (e164: string, code: string, ref?: string | null) => p.check!(e164, code, ref) } : {}),

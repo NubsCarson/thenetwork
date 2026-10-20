@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { verifyProxyHeaders } from "../../packages/platform/src/proxy.ts";
 import { APPS, keywordApp } from "../../packages/platform/src/apps.ts";
-import { AGENTS, keywordFor, promptFor } from "../agents.ts";
+import { AGENTS, keywordFor, joinMessageFor, promptFor } from "../agents.ts";
 import { TEXT_LINE } from "../skills.config.ts";
 import { device } from "../shared/agent.ts";
 import { SITES, buildSite, walk, type Site } from "../sites.ts";
@@ -27,7 +27,6 @@ const htmlFiles = (s: Site) => readdirSync(out(s)).filter((f) => f.endsWith(".ht
 const OTHER_APP_DOMAINS = (s: Site) => SITES.filter((o) => o.app !== s.app && o.app !== "ntwrk").map((o) => o.domain);
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 // The text messaging terms are a section of the terms page on every site.
-const smsPage = (_: Site) => "terms.html";
 
 function consentWording(html: string): string {
   const m = html.match(/<span data-consent-wording[^>]*>([\s\S]*?)<\/span>/);
@@ -44,10 +43,17 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe.each(SITES)("$domain", (s) => {
   test("every required page is built", () => {
-    const need = ["index.html", "join.html", "settings.html", "privacy.html", "terms.html", "404.html"];
+    const need = ["index.html", "join.html", "privacy.html", "terms.html", "404.html"];
     expect(htmlFiles(s)).not.toContain("sms-terms.html");
 
     expect(htmlFiles(s)).toEqual(expect.arrayContaining(need));
+  });
+
+  test("landing pages lead to agents without a standalone account portal", () => {
+    expect(htmlFiles(s)).not.toContain("settings.html");
+    for (const f of htmlFiles(s)) expect(read(s, f)).not.toContain('href="/settings"');
+    expect(read(s, "index.html")).not.toContain("Sign in");
+    expect(read(s, "index.html")).toContain("sms:");
   });
 
   test("every page has a title and the legal links", () => {
@@ -66,12 +72,12 @@ describe.each(SITES)("$domain", (s) => {
     expect(wording).toContain("Reply STOP");
     expect(wording).toContain("HELP");
     expect(wording).toContain("Message and data rates may apply");
-    if (s.app !== "ntwrk") expect(text(read(s, smsPage(s)))).toContain(wording);
+    if (s.app !== "ntwrk") expect(text(read(s, "terms.html"))).toContain(wording);
   });
 
   test("privacy and SMS terms carry the 10DLC sentence", () => {
     expect(text(read(s, "privacy.html"))).toContain(TENDLC);
-    expect(text(read(s, smsPage(s)))).toContain(TENDLC);
+    expect(text(read(s, "terms.html"))).toContain(TENDLC);
   });
 
   test("the join page's consent wording is the platform's canonical text for this app", () => {
@@ -95,7 +101,7 @@ describe.each(SITES)("$domain", (s) => {
 
   test("STOP stops every app; 'leave <app>' stops one (PRD 40.3). No page says STOP ALL", () => {
     for (const f of htmlFiles(s)) expect(read(s, f), f).not.toContain("STOP ALL");
-    const sms = text(read(s, smsPage(s)));
+    const sms = text(read(s, "terms.html"));
     expect(sms).toMatch(/STOP to stop every text from our number/);
     expect(sms).toContain(s.app === "ntwrk" ? '"leave slop.date"' : `leave ${s.domain}`);
   });
@@ -179,8 +185,8 @@ describe.each(SITES)("$domain", (s) => {
     }
   });
 
-  test("the phone step on join and settings carries the Turnstile slot and the site key meta", () => {
-    for (const f of ["join.html", "settings.html"]) {
+  test("the phone step on join carries the Turnstile slot and the site key meta", () => {
+    for (const f of ["join.html"]) {
       const html = read(s, f);
       expect(html, f).toContain('<meta name="turnstile-sitekey" content="">');
       expect(html.indexOf("data-turnstile"), f).toBeGreaterThan(html.indexOf('data-form="phone"'));
@@ -206,7 +212,9 @@ test("staging builds keep the served entry, skills and signed router on configur
     expect((await buildSite(slop, directory, env)).ok).toBe(true);
     expect((await buildSite(hub, hubDirectory, env)).ok).toBe(true);
     const home = readFileSync(join(directory, "index.html"), "utf8");
-    const prompt = `Read ${origins.slop}/SKILL.md and follow it.`;
+    const builtSkill = readFileSync(join(directory, "SKILL.md"), "utf8");
+    const version = (Bun.YAML.parse(builtSkill.split("---")[1]!) as { metadata: { version: string } }).metadata.version;
+    const prompt = `Read ${origins.slop}/SKILL.md?version=${encodeURIComponent(version)} and follow it.`;
     expect(home).toContain(`<code data-prompt>${prompt}</code>`);
     expect(home).toContain(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`);
     for (const origin of ["https://chatgpt.com/", "https://claude.ai/new", "https://grok.com/", "https://gemini.google.com/app", "https://www.perplexity.ai/search"]) {
@@ -227,7 +235,7 @@ test("staging builds keep the served entry, skills and signed router on configur
     const base = `http://127.0.0.1:${server.port}`;
     const skill = await (await fetch(`${base}/SKILL.md`)).text();
     expect(skill).toContain(`MCP endpoint is ${origins.slop}/mcp`);
-    for (const path of ["join?via=agent", "settings", "privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
+    for (const path of ["join?via=agent", "privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
     expect(skill).toContain("Email: help@ntwrk.party");
     expect(skill).not.toContain("https://slop.date");
     const index = await (await fetch(`${base}/.well-known/agent-skills/index.json`)).json() as { skills: { url: string; digest: string }[] };
@@ -249,10 +257,12 @@ test("staging builds keep the served entry, skills and signed router on configur
   } finally { server?.stop(true); backend.stop(true); }
 });
 
-test("landing pages: one line, the prompt field, a logo for every agent; nothing else", () => {
+test("landing pages keep agent onboarding and an accessible phone sign-in link", () => {
   for (const s of SITES) {
     const home = read(s, "index.html");
-    const prompt = promptFor(s);
+    const version = (Bun.YAML.parse(read(s, "SKILL.md").split("---")[1]!) as { metadata: { version: string } }).metadata.version;
+    const skillUrl = `https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)}`;
+    const prompt = `Read ${skillUrl} and follow it.`;
     const q = encodeURIComponent(prompt);
     expect(home, s.domain).toContain(`<code data-prompt>${prompt}</code>`);
     expect(home, s.domain).toMatch(/<button type="button" data-copy[^>]*>Copy<\/button>/);
@@ -263,12 +273,16 @@ test("landing pages: one line, the prompt field, a logo for every agent; nothing
     for (const a of AGENTS) {
       const tile = row.match(new RegExp(`<(a|button)[^>]*data-agent="${a.id}"[^>]*>\\s*<svg`))?.[0] ?? "";
       expect(tile, `${s.domain} ${a.id}`).toContain(`aria-label="${a.href ? "Open in" : "Copy the prompt for"} ${a.name}"`);
-      if (a.href) expect(tile, `${s.domain} ${a.id}`).toContain(`href="${a.href.replace("{q}", q).replace("{skill}", encodeURIComponent(`https://${s.domain}/SKILL.md`))}"`);
+      if (a.href) expect(tile, `${s.domain} ${a.id}`).toContain(`href="${a.href.replace("{q}", q).replace("{skill}", encodeURIComponent(skillUrl))}"`);
       else expect(tile, `${s.domain} ${a.id}`).toMatch(/^<button type="button"[^>]* hidden /);
       expect(tile.includes('data-only="desktop"'), `${s.domain} ${a.id}`).toBe(Boolean(a.desktopOnly));
     }
     // Joining by text: the shared line with this app's keyword, which the line routes to this app.
-    expect(row, s.domain).toContain(`href="sms:${TEXT_LINE}?&amp;body=${keywordFor(s)}"`);
+    expect(row, s.domain).not.toContain("sms:");
+    expect(home, s.domain).toContain(`href="sms:${TEXT_LINE}?body=${encodeURIComponent(joinMessageFor(s))}"`);
+    expect(home, s.domain).toContain('data-text-eliza>Text Eliza</a>');
+    expect(home, s.domain).toContain(`<code data-text-message>${joinMessageFor(s)}</code>`);
+    expect(keywordApp(joinMessageFor(s)), s.domain).toBe(s.app);
     expect(keywordApp(keywordFor(s)), s.domain).toBe(s.app);
     // No eyebrow, safety notice, explanation, city or sibling brand; legal pages in the footer.
     expect(text(home), s.domain).not.toMatch(/background check|safety notice|How it works|What you get|powered by|New York|San Francisco/i);
@@ -422,6 +436,9 @@ describe("dev server", () => {
     expect(md.status).toBe(200);
     expect(md.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     const bytes = new Uint8Array(await md.arrayBuffer());
+    const versioned = await fetch(`http://127.0.0.1:${up.port}/SKILL.md?version=1.1.1`);
+    expect(versioned.status).toBe(200);
+    expect(Buffer.from(await versioned.arrayBuffer()).equals(Buffer.from(bytes))).toBe(true);
     expect(Buffer.from(bytes).equals(readFileSync(join(out(slop), "SKILL.md")))).toBe(true);
     const idx = await fetch(`http://127.0.0.1:${up.port}/.well-known/agent-skills/index.json`);
     expect(idx.headers.get("content-type")).toContain("application/json");

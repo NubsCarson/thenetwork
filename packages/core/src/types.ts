@@ -10,7 +10,9 @@ export type ParticipationState = "open" | "normal" | "quiet" | "receiving" | "pa
  * Optional everywhere: absent means the single-app Network ("ntwrk"). Facts, names and contact
  * details learned in one app must never reach a message sent in another (judge: cross_app_leak).
  */
-export type AppId = "ntwrk" | "slop" | "peon" | "friends";
+export const APP_IDS = ["ntwrk", "slop", "peon", "friends"] as const;
+export type AppId = (typeof APP_IDS)[number];
+export const isAppId = (v: unknown): v is AppId => typeof v === "string" && (APP_IDS as readonly string[]).includes(v);
 export type PrivacyScope = "agent_private" | "matchable" | "shareable" | "opportunity_specific";
 export type Provenance = "said" | "connected_source" | "inferred" | "vouched";
 export type FacetKind =
@@ -121,6 +123,13 @@ export type OpportunityState =
   | "NEEDS_REPLACEMENT" | "IN_PROGRESS" | "COMPLETED" | "FEEDBACK_COLLECTED"
   | "REJECTED_IN_REVIEW" | "DECLINED" | "EXPIRED" | "QUORUM_FAILED" | "CANCELLED"
   | "SAFETY_HOLD" | "DISPUTED" | "ABANDONED";
+
+/** An opportunity the Network already sent and that is still open (invite pending or meeting ahead). */
+export interface OpenOpportunity {
+  id: string; participants: MemberId[]; stage: "inviting" | "scheduled";
+  /** Invite expiry or meeting time (epoch ms), if known. */
+  until?: number;
+}
 
 /** Snapshot the engine reads. Built from Postgres in production, from the simulator in tests. */
 export interface WorldSnapshot {

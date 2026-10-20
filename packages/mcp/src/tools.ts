@@ -1,15 +1,15 @@
 // The tools. app_info and start_signup need no sign-in and return public facts only.
 // check_status and get_updates need membership:read and return only the signed-in person's own state
-// or updates in the one app the client is bound to. No tool takes a phone number, a code, a name or an age, and every
-// input schema refuses properties it does not list.
+// or updates in the one app the client is bound to. No tool takes a phone number, a code or an age, and every
+// input schema refuses properties it does not list. prepare_signup alone takes approved Join name/home city.
 import { appsOn, type McpApp, type McpAppId, type Surface } from "./apps.ts";
 import type { AssistantKind, PlatformHooks, PublicStatus } from "./hooks.ts";
-import type { Grant, Scope } from "./store.ts";
+import type { Grant, Scope, OAuthStore, SignupDraftFields } from "./store.ts";
 import { outputLeaks } from "./leaks.ts";
 
-export const TOOL_NAMES = ["app_info", "start_signup", "check_status", "submit_profile", "get_updates"] as const;
+export const TOOL_NAMES = ["app_info", "start_signup", "check_status", "submit_profile", "get_updates", "prepare_signup"] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
-export const TOOL_SCOPE: Record<ToolName, Scope | null> = { app_info: null, start_signup: null, check_status: "membership:read", submit_profile: "profile:write", get_updates: "membership:read" };
+export const TOOL_SCOPE: Record<ToolName, Scope | null> = { app_info: null, start_signup: null, check_status: "membership:read", submit_profile: "profile:write", get_updates: "membership:read", prepare_signup: "profile:write" };
 /** An update reference from a Network text (packages/notify task tokens): a pointer, never a credential. */
 export const UPDATE_TOKEN = /^T-[2-9A-HJKMNP-TV-Z]{6}$/;
 /** The longest profile text the assistant may submit (a few short paragraphs). */
@@ -28,12 +28,28 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
   const appProp = (description: string) => ({ type: "string", enum: ids, description });
   const noauth = [{ type: "noauth" }];
   const oauth = [{ type: "oauth2", scopes: ["membership:read"] }];
+  const text = { type: "string" };
+  const nullableText = { type: ["string", "null"] };
+  const object = (properties: Record<string, unknown>) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
+  const appId = { type: "string", enum: ids };
+  const ownApp = { type: "string", enum: [host.id] };
+  const joinMode = { type: "string", enum: ["invite", "open", "waitlist"] };
+  const ages = object({ join: { type: "integer" }, matching: { type: "integer" } });
+  const status = { type: "string", enum: Object.keys(NEXT) };
+  const publicApp = object({
+    id: appId, name: text, site: text, what: text, powered_by: text,
+    join: object({ mode: joinMode, url: text, keyword: nullableText, how: text }),
+    ages, adults_only: { type: "array", items: text }, stop: text,
+    consent_rules: { type: "array", items: text },
+    links: object({ privacy: text, terms: text, sms_terms: nullableText, support: text }),
+  });
   return [
     {
       name: "app_info",
       title: "About the apps",
-      description: "Public facts about one app powered by The Network, or about all of them: what it is for, who can join, how a person joins, and links to its privacy, terms and safety pages. Never returns anything about a person.",
+      description: "Public facts about one app powered by The Network, or about all of them: what it is for, who can join, how a person joins, and links to its privacy and terms pages. Never returns anything about a person.",
       inputSchema: { type: "object", properties: { app: appProp("One app. Leave it out for all apps.") }, additionalProperties: false },
+      outputSchema: { type: "object", anyOf: [publicApp, object({ apps: { type: "array", items: publicApp } })] },
       annotations: annotations("About the apps"),
       securitySchemes: noauth,
       _meta: { securitySchemes: noauth },
@@ -43,15 +59,26 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
       title: "Get the sign-up link",
       description: "Returns the link and the text keyword a person uses to sign themselves up for one app, with plain instructions to give them. It does not sign anyone up and takes no personal details.",
       inputSchema: { type: "object", properties: { app: appProp("The app to join.") }, required: ["app"], additionalProperties: false },
+      outputSchema: object({ app: appId, join_mode: joinMode, url: text, keyword: nullableText, instructions_for_person: text, ages }),
       annotations: annotations("Get the sign-up link"),
       securitySchemes: noauth,
       _meta: { securitySchemes: noauth },
     },
+    ...(host.id === "friends" || host.id === "ntwrk" ? [{
+      name: "prepare_signup", title: "Prepare my Join form",
+      description: "After verified phone sign-in and OAuth approval, save only the first name and optional home city the person explicitly approved for this app. They must open Join, review or edit every field and consent themselves. Never creates a person, membership or text consent. One draft per grant; no age, phone, code, gender or dating preferences.",
+      inputSchema: { type: "object", properties: { app: { type: "string", enum: [host.id] }, firstName: { type: "string", minLength: 1, maxLength: 50 }, homeCity: { type: "string", enum: ["nyc", "sf"] } }, required: ["firstName"], additionalProperties: false },
+      outputSchema: object({ prepared: { type: "boolean", const: true }, app: ownApp, url: text, next_step: text }),
+      annotations: { title: "Prepare my Join form", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      securitySchemes: [{ type: "oauth2", scopes: ["profile:write"] }],
+      _meta: { securitySchemes: [{ type: "oauth2", scopes: ["profile:write"] }] },
+    }] : []),
     {
       name: "check_status",
       title: `My ${host.name} status`,
       description: `After the person signs in on ${host.domain} and allows access, returns their own status in ${host.name} only (not joined, invited, onboarding, active, stopped or on hold) and what to do next. Never returns anything about other people or other apps.`,
       inputSchema: { type: "object", properties: { app: { type: "string", enum: [host.id], description: `Optional. Always ${host.id}: this connection covers ${host.name} only.` } }, additionalProperties: false },
+      outputSchema: object({ app: ownApp, status, next_step: text, manage_url: text }),
       annotations: annotations(`My ${host.name} status`),
       securitySchemes: oauth,
       _meta: { securitySchemes: oauth },
@@ -68,6 +95,10 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
         },
         required: ["about"], additionalProperties: false,
       },
+      outputSchema: { type: "object", anyOf: [
+        object({ app: ownApp, submitted: { type: "boolean", const: true }, next_step: text }),
+        object({ app: ownApp, submitted: { type: "boolean", const: false }, status, next_step: text }),
+      ] },
       annotations: { title: `Send my profile to ${host.name}`, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       securitySchemes: [{ type: "oauth2", scopes: ["profile:write"] }],
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["profile:write"] }] },
@@ -84,7 +115,9 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
         },
         additionalProperties: false,
       },
-      annotations: annotations(`My ${host.name} updates`),
+      outputSchema: object({ app: ownApp, updates: { type: "array", items: object({ summary: text, at: text, kind: text }) }, next_step: text }),
+      // Reading marks items seen and every call updates the assistant's last-used time.
+      annotations: { title: `My ${host.name} updates`, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       securitySchemes: oauth,
       _meta: { securitySchemes: oauth },
     },
@@ -123,13 +156,19 @@ export function contactOrCode(text: string): boolean {
   return false;
 }
 
-export function checkArgs(name: ToolName, args: unknown, enumIds: string[], host: McpApp): { ok: true; app?: string; about?: string; token?: string } | { ok: false; message: string } {
+export function checkArgs(name: ToolName, args: unknown, enumIds: string[], host: McpApp): { ok: true; app?: string; about?: string; token?: string; draft?: SignupDraftFields } | { ok: false; message: string } {
   if (args === undefined || args === null) args = {};
   if (typeof args !== "object" || Array.isArray(args)) return { ok: false, message: "Arguments must be an object." };
   const a = args as Record<string, unknown>;
-  const extra = Object.keys(a).filter(k => k !== "app" && !(name === "submit_profile" && k === "about") && !(name === "get_updates" && k === "update_token"));
-  // Refuse, never ignore: a phone, a code, a name or an age is never accepted by any tool.
+  const extra = Object.keys(a).filter(k => k !== "app" && !(name === "submit_profile" && k === "about") && !(name === "get_updates" && k === "update_token") && !(name === "prepare_signup" && ["firstName", "homeCity"].includes(k)));
+  // Refuse unlisted fields. Only prepare_signup takes an approved first name and home city.
   if (extra.length) return { ok: false, message: `This tool does not take ${extra.map(k => `"${k.slice(0, 40)}"`).join(", ")}. It never takes phone numbers, codes or personal details.` };
+  if (name === "prepare_signup") {
+    if (!["friends", "ntwrk"].includes(host.id) || (a.app !== undefined && a.app !== host.id)) return { ok: false, message: "This draft is not available for that app." };
+    const firstName = typeof a.firstName === "string" ? a.firstName.trim() : "";
+    if (!firstName || firstName.length > 50 || !/^[\p{L}][\p{L}\p{M}'’-]{0,49}$/u.test(firstName) || contactOrCode(firstName) || (a.homeCity !== undefined && a.homeCity !== "nyc" && a.homeCity !== "sf")) return { ok: false, message: "Use only the approved first name and a supported home city." };
+    return { ok: true, app: host.id, draft: { firstName, ...(a.homeCity ? { homeCity: a.homeCity as "nyc" | "sf" } : {}) } };
+  }
   if (name === "submit_profile") {
     const about = typeof a.about === "string" ? a.about.trim() : "";
     if (about.length < 10 || about.length > PROFILE_MAX_CHARS) return { ok: false, message: `about must be 10 to ${PROFILE_MAX_CHARS} characters.` };
@@ -152,7 +191,7 @@ export function checkArgs(name: ToolName, args: unknown, enumIds: string[], host
 
 function invitationGuidance(a: McpApp): string {
   return `${a.name} is invite-only. There is no public sign-up form. Ask a member who knows you, or the team, for an invitation. ` +
-    `Reply to that invitation text to accept. Already a member? Open ${a.links.settings} yourself to sign in.`;
+    `Reply to that invitation text to accept. Already a member? Confirm your phone during connector authorization, then return to your agent.`;
 }
 
 function publicInfo(a: McpApp, surface: Surface) {
@@ -175,7 +214,7 @@ function publicInfo(a: McpApp, surface: Surface) {
       "Nothing crosses from one app to another unless the person shares it.",
       "The person signs themselves up and types their own code on the site. An assistant never handles the code.",
     ],
-    links: { privacy: a.links.privacy, terms: a.links.terms, sms_terms: a.links.smsTerms, settings: a.links.settings, support: a.links.support },
+    links: { privacy: a.links.privacy, terms: a.links.terms, sms_terms: a.links.smsTerms, support: a.links.support },
   };
 }
 
@@ -185,9 +224,9 @@ const NEXT: Record<PublicStatus, (a: McpApp) => string> = {
     : `Not joined. To join, open ${a.links.join} and sign up there.`,
   invited: a => `Invited. To accept, open ${a.links.join} or reply to the invitation text.`,
   onboarding: () => "Joining is not finished. Reply to the last text from the agent to finish.",
-  active: () => "Active. Nothing to do. The agent texts when it has something worth the person's time.",
-  stopped: a => `Messages are stopped. To start again, text START to the line or open ${a.links.settings}.`,
-  on_hold: a => `On hold. The person should open ${a.links.settings} or email ${a.links.support.replace("mailto:", "")}.`,
+  active: () => "You are signed up.",
+  stopped: () => `Messages are stopped. To start again, text START to the line.`,
+  on_hold: a => `On hold. The person should email ${a.links.support.replace("mailto:", "")}.`,
 };
 
 export interface CallContext {
@@ -196,6 +235,8 @@ export interface CallContext {
   host: McpApp;
   hooks: PlatformHooks;
   grant: Grant | null;
+  store?: OAuthStore;
+  now?: number;
   /** Which assistant the OAuth client is (by its redirect hosts): chatgpt, claude, grok, or web. */
   assistant?: AssistantKind;
 }
@@ -233,6 +274,23 @@ export async function callTool(name: ToolName, args: unknown, c: CallContext): P
         },
       };
     }
+    case "prepare_signup": {
+      const g = c.grant, store = c.store;
+      if (!g || !store) return { kind: "invalid_grant" };
+      if (!c.hooks.withSignupAgePolicy || !c.hooks.setSignupAgeCleanup) return { kind: "error", message: "Use the normal Join form to enter your details." };
+      const started = performance.now(), requestedAt = c.now ?? Date.now();
+      return c.hooks.withSignupAgePolicy(g.phoneKey, g.app, async allowed => {
+        if (!allowed) return { kind: "error", message: "We cannot prepare this Join form. Check the joining requirements on the site." };
+        const person = await c.hooks.personForKey(g.phoneKey);
+        if (!grantStillTheirs(g.personId, person)) return { kind: "invalid_grant" };
+        const status = person === null ? "not_joined" : await c.hooks.status(person, g.app);
+        if (status !== "not_joined" && status !== "invited") return { kind: "error", message: "Use your existing profile; this form is for joining." };
+        const at = requestedAt + Math.ceil(performance.now() - started);
+        const saved = await store.putSignupDraft({ grantId: g.id, app: g.app, phoneKey: g.phoneKey, fields: chk.draft!, expiresAt: Math.min(requestedAt + 10 * 60_000, g.expiresAt), consumedAt: null }, at);
+        return saved ? { kind: "ok", data: { prepared: true, app: g.app, url: `${c.apps[g.app].links.join}?via=agent`, next_step: "Open Join to review or edit your name and home city. Your age and text consent are still yours to enter." } }
+          : { kind: "error", message: "This connection already prepared a draft or is no longer valid. Open Join to enter or edit your details." };
+      });
+    }
     case "check_status": {
       const g = c.grant;
       if (!g) return { kind: "invalid_grant" };
@@ -240,7 +298,7 @@ export async function callTool(name: ToolName, args: unknown, c: CallContext): P
       if (!grantStillTheirs(g.personId, now)) return { kind: "invalid_grant" };
       const status: PublicStatus = now === null ? "not_joined" : await c.hooks.status(now, g.app);
       const a = c.apps[g.app];
-      return { kind: "ok", data: { app: a.id, status, next_step: NEXT[status](a), manage_url: a.links.settings } };
+      return { kind: "ok", data: { app: a.id, status, next_step: NEXT[status](a), manage_url: a.links.support } };
     }
     case "submit_profile": {
       const g = c.grant;

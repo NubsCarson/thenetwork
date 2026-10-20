@@ -1,6 +1,7 @@
 // People, phones, memberships and the rest of the platform schema (migration 0003), behind one
 // interface with two implementations: MemoryPeopleStore (tests, dev) and PgPeopleStore (pg-store.ts).
 // Times are epoch milliseconds. Phone numbers are E.164.
+import type { City } from "../../core/src/types.ts";
 import type { AppId } from "./apps.ts";
 import type { ConsentEvent, ConsentLast } from "./consent.ts";
 import { lastEvents } from "./consent.ts";
@@ -11,7 +12,7 @@ export type MembershipState = "invited" | "onboarding" | "active" | "paused" | "
 export interface Person { id: string; lowestAge: number | null; createdAt: number; deletedAt: number | null }
 /** A text flow waiting for the person's next message (platform.pending_texts): a join that has asked for name and age, The Network's "what are you looking for?", a SHARE offer, or the photo consent asked after a photo by text. */
 export type PendingKind = "join" | "looking_for" | "share" | "photo_consent";
-export interface PendingText { phoneHash: string; kind: PendingKind; app: AppId; name: string | null; age: number | null; at: number }
+export interface PendingText { phoneHash: string; kind: PendingKind; app: AppId; name: string | null; age: number | null; homeCity?: City; at: number }
 export type PhoneHold = "recycled_number";
 export interface PhoneIdentity {
   e164: string; personId: string; verifiedAt: number; method: PhoneMethod; lastSeenAt: number | null;
@@ -41,7 +42,9 @@ export interface OtpChallenge {
   id: string; app: AppId; e164: string; provider: string;
   /** The provider's id for this verification (Twilio Verify's VerificationSid): the check is bound to it, so a code sent for one app never verifies another. */
   providerRef: string | null;
-  /** Set only when this server checks the code (the dev provider). */
+  /** Private routing metadata for a Blooio status-only lookup. Legacy challenges have none. */
+  providerChatId?: string | null;
+  /** Set only when this server checks the code (Blooio or the dev provider). */
   codeHash: string | null;
   attempts: number; createdAt: number; expiresAt: number; consumedAt: number | null;
 }
@@ -84,6 +87,10 @@ export interface PeopleStore {
   /** The lowest age ever stated for a keyed phone hash (no app, no person; kept after a delete of everything). */
   ageFloor(phoneHash: string): Promise<number | undefined>;
   noteAgeFloor(phoneHash: string, age: number, at: number): Promise<number>;
+  /** Independent keyed-phone guard for age recording and temporary facts. Its callback must not acquire withLock. */
+  withPhoneAgeGuard<T>(phoneHash: string, fn: () => Promise<T>): Promise<T>;
+  /** One canonical temporary-data cleanup consumer; awaited before an age recording returns. */
+  setAgeFloorCleanup(fn: (phoneHash: string, age: number) => Promise<void>): void;
   clearAgeFloor(phoneHash: string): Promise<void>;
   /** Record a stated or recorded age: the person keeps the lowest one. Returns the new lowest age. */
   noteAge(personId: string, age: number): Promise<number>;
@@ -214,11 +221,23 @@ export class MemoryPeopleStore implements PeopleStore {
   async setPhoneHold(e164: string, hold: PhoneHold | null) { const ph = this.phones.get(e164); if (ph) ph.hold = hold; }
   async heldPhones() { return [...this.phones.values()].filter(p => p.hold !== null).map(p => ({ ...p })); }
   async ageFloor(phoneHash: string) { return this.ageFloors.get(phoneHash)?.age; }
+  private readonly ageLocks = new Map<string, Promise<unknown>>();
+  private ageCleanup?: (phoneHash: string, age: number) => Promise<void>;
+  setAgeFloorCleanup(fn: (phoneHash: string, age: number) => Promise<void>) { this.ageCleanup = fn; }
+  async withPhoneAgeGuard<T>(phoneHash: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.ageLocks.get(phoneHash) ?? Promise.resolve();
+    const run = previous.then(fn, fn), tail = run.catch(() => {});
+    this.ageLocks.set(phoneHash, tail);
+    try { return await run; } finally { if (this.ageLocks.get(phoneHash) === tail) this.ageLocks.delete(phoneHash); }
+  }
   async noteAgeFloor(phoneHash: string, age: number, at: number) {
-    const cur = this.ageFloors.get(phoneHash);
-    const lowest = cur ? Math.min(cur.age, age) : age;
-    this.ageFloors.set(phoneHash, { age: lowest, at: cur && cur.age <= age ? cur.at : at });
-    return lowest;
+    return this.withPhoneAgeGuard(phoneHash, async () => {
+      const cur = this.ageFloors.get(phoneHash);
+      const lowest = cur ? Math.min(cur.age, age) : age;
+      this.ageFloors.set(phoneHash, { age: lowest, at: cur && cur.age <= age ? cur.at : at });
+      await this.ageCleanup?.(phoneHash, lowest);
+      return lowest;
+    });
   }
   async clearAgeFloor(phoneHash: string) { this.ageFloors.delete(phoneHash); }
   async noteAge(personId: string, age: number) {

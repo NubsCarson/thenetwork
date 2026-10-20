@@ -1,0 +1,86 @@
+name: Inspect existing Network Pages credential
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Existing Cloudflare account to inspect (or use NETWORK_PAGES_ACCOUNT_ID)
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  inspect:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    # Preserve the existing production environment approval and branch restrictions.
+    environment: production
+    steps:
+      - name: Read four exact existing Pages projects
+        env:
+          ACCOUNT_ID: ${{ inputs.account_id || vars.NETWORK_PAGES_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import http.client
+          import json
+          import os
+          import re
+
+          account = os.environ.get("ACCOUNT_ID", "")
+          token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+          account_valid = bool(re.fullmatch(r"[0-9a-f]{32}", account))
+          projects = (
+              "ntwrk-party-eliza",
+              "slop-date-eliza-stage",
+              "friends-help-eliza-stage",
+              "peon-biz-eliza-stage",
+          )
+          all_readable = True
+          for project in projects:
+              result = {
+                  "account": account if account_valid else "invalid",
+                  "project": project,
+                  "accountValid": account_valid,
+                  "credentialPresent": bool(token),
+                  "requestCompleted": False,
+                  "httpOk": False,
+                  "projectMatched": False,
+                  "readAccess": False,
+              }
+              if account_valid and token:
+                  connection = http.client.HTTPSConnection("api.cloudflare.com", timeout=15)
+                  try:
+                      connection.request(
+                          "GET",
+                          f"/client/v4/accounts/{account}/pages/projects/{project}",
+                          headers={"Authorization": "Bearer " + token},
+                      )
+                      response = connection.getresponse()
+                      result["requestCompleted"] = True
+                      result["httpOk"] = response.status == 200
+                      body = json.loads(response.read())
+                      metadata = body.get("result") if isinstance(body, dict) else None
+                      result["projectMatched"] = (
+                          isinstance(metadata, dict)
+                          and metadata.get("name") == project
+                          and metadata.get("subdomain") == project + ".pages.dev"
+                      )
+                      result["readAccess"] = (
+                          result["httpOk"]
+                          and body.get("success") is True
+                          and result["projectMatched"]
+                      )
+                  except Exception:
+                      # Never print request headers, credentials, response bodies or exception details.
+                      pass
+                  finally:
+                      connection.close()
+              print(json.dumps(result, separators=(",", ":")), flush=True)
+              all_readable = all_readable and result["readAccess"]
+          # GET acceptance demonstrates read access only; it does not prove Pages Edit.
+          raise SystemExit(0 if all_readable else 1)
+          PY

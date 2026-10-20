@@ -41,6 +41,19 @@ export function mountAgents(root: Document = document): void {
   const status = root.querySelector<HTMLElement>("[data-status]");
   const say = (text: string) => { if (status) status.textContent = text; };
 
+  const textMessage = root.querySelector<HTMLElement>("[data-text-message]");
+  const copyMessage = root.querySelector<HTMLButtonElement>("[data-copy-message]");
+  if (textMessage && copyMessage) {
+    copyMessage.hidden = false;
+    copyMessage.addEventListener("click", async () => {
+      copyMessage.textContent = (await copy(textMessage)) ? "Copied" : "Selected: press copy";
+    });
+    root.querySelector<HTMLAnchorElement>("[data-text-eliza]")?.addEventListener("click", async () => {
+      const copied = await copy(textMessage);
+      say(copied ? "If Messages opens without the text, paste the copied message." : "If Messages opens without the text, copy the message shown here.");
+    });
+  }
+
   const button = root.querySelector<HTMLButtonElement>("[data-copy]");
   if (button) {
     button.hidden = false;

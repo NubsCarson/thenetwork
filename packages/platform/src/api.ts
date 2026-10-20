@@ -13,17 +13,18 @@
 //   const api = createPublicApi({ store, otp, turnstile });
 //   Bun.serve({ fetch: async (req, server) => (await api.fetch(req, server)) ?? new Response("not found", { status: 404 }) });
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { type AccountHooks, Accounts, type MemberHookContext, parseJoin, publicMembership, type Who } from "./accounts.ts";
+import { type AccountHooks, Accounts, type HomeInput, type MemberHookContext, parseHome, parseJoin, publicMembership, type Who } from "./accounts.ts";
 import { APPS, type AppId, type AppInfo, appForHost, DEFAULT_HOST_MAP, DEV_HOST_MAP, isAppId, publicAppInfo, siteHosts, stagingSiteOrigins } from "./apps.ts";
 import { devShortcutsAllowed, type Env } from "./env.ts";
 import { type OtpProvider, OtpService, type OtpLimits } from "./otp.ts";
 import { maskPhone, normalizePhone } from "./phone.ts";
 import { readCappedText } from "./body.ts";
 import { verifyProxyHeaders } from "./proxy.ts";
-import { SessionService, SESSION_TTL_MS, tokenHash } from "./sessions.ts";
+import { SessionService, SESSION_TTL_MS, tokenHash, signupAccountView } from "./sessions.ts";
 import type { PeopleStore } from "./store.ts";
 import type { TurnstileVerifier } from "./turnstile.ts";
 import type { PhotoService } from "./photos.ts";
+import type { PhotoRelayService } from "./photo-relay.ts";
 
 export interface PublicApiOptions extends AccountHooks {
   store: PeopleStore;
@@ -56,6 +57,8 @@ export interface PublicApiOptions extends AccountHooks {
   otpLimits?: Partial<OtpLimits>;
   /** Private member photos (photos.ts): /api/photos/*. Without it those paths answer 404. */
   photos?: PhotoService;
+  /** Voluntary item sharing. Absent until an approved item-review policy is configured. */
+  photoRelay?: PhotoRelayService;
   /**
    * The member's availability for GET /api/me, read from the member record the Network uses (a pause or
    * busy window set by text or by the agent, and quiet hours). It is not the messaging consent: a STOP
@@ -64,22 +67,16 @@ export interface PublicApiOptions extends AccountHooks {
   participation?: (ctx: MemberHookContext) => Promise<MemberParticipation | null> | MemberParticipation | null;
   /** POST /api/me/resume: end the member's availability pause (never a STOP: messaging consent stays as it is). 404 without it. */
   onResume?: (ctx: MemberHookContext) => Promise<void> | void;
+  /** Own current home, and an atomic correction. Neither changes messaging consent or membership. */
+  home?: (ctx: MemberHookContext) => Promise<HomeInput | null>;
+  onHome?: (ctx: MemberHookContext, input: HomeInput) => Promise<HomeInput | "runtime_change_unsupported" | null>;
   /** GET /api/demo: a synthetic, scrubbed replay for the landing page. 404 without it. */
   demo?: (app: AppId) => unknown | Promise<unknown>;
   log?: (s: string) => void;
 }
 
-/**
- * The member's availability (GET /api/me). `state` uses the agent contract's words: open, busy,
- * traveling or paused. `from` and `until` are ISO times or null (null `until`: until the member says
- * otherwise). `quietHours` is [start hour, end hour] in the member's time, when the member set them.
- */
-export interface MemberParticipation {
-  state: "open" | "busy" | "traveling" | "paused";
-  from: string | null;
-  until: string | null;
-  quietHours?: [number, number];
-}
+import type { MemberParticipation } from "./public-types.ts";
+export type { MemberParticipation } from "./public-types.ts";
 
 /** What Bun.serve passes as the second fetch argument: the socket address of the request. */
 export interface PeerInfo { requestIP(req: Request): { address: string } | null }
@@ -250,6 +247,9 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
   }
 
   async function handle(req: Request, url: URL, peer?: string): Promise<Response> {
+    // This exact purpose-scoped capability verifies its own immutable recipient/item authority.
+    const selectedPhoto = await o.photoRelay?.serveDelivery(req);
+    if (selectedPhoto) return selectedPhoto;
     // A request signed by a site router: its host and client IP. Otherwise our own Host and the socket.
     const signed = await verifyProxyHeaders(req, proxySecret, Math.floor(now() / 1000));
     const host = signed?.host ?? (o.trustForwardedHost ? req.headers.get("x-forwarded-host") : null) ?? req.headers.get("host") ?? url.host;
@@ -281,6 +281,21 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
     const post = req.method === "POST";
     if (!post && req.method !== "GET") return json(405, { ok: false, error: "method" });
     const photoPath = url.pathname.replace(/\/+$/, "");
+    if (o.photoRelay && photoPath.startsWith("/api/relay-photos/")) {
+      if (post) {
+        if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return json(415, { ok: false, error: "json_required" });
+        if (req.headers.get("sec-fetch-site") === "cross-site") return json(403, { ok: false, error: "origin" });
+        const origin = req.headers.get("origin");
+        try { if (origin && appForHost(new URL(origin).host, hostMap) !== appId) return json(403, { ok: false, error: "origin" }); }
+        catch { return json(403, { ok: false, error: "origin" }); }
+      }
+      let authenticated: Awaited<ReturnType<typeof auth>>;
+      const response = await o.photoRelay.route(req, photoPath, appId, async () => {
+        authenticated = await auth();
+        return authenticated?.session.personId ? { personId: authenticated.session.personId, accountView: signupAccountView(appId, accounts.phoneHash(authenticated.session.e164)) } : undefined;
+      });
+      if (response) { if (authenticated) rotatedCookies(response, authenticated); return response; }
+    }
     if (o.photos && (photoPath === "/api/photos" || photoPath.startsWith("/api/photos/"))) {
       // The upload is raw image bytes, not JSON: the same cross-site checks, and an image or JSON type only.
       if (post) {
@@ -335,7 +350,7 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
       case "POST /api/auth/cloud/start": {
         if (!cloud) return json(404, {ok: false, error: "not_found"});
         const returnPath = b.returnPath === "/join" || b.returnPath === "/join.html" ? "/join"
-          : b.returnPath === "/settings" || b.returnPath === "/settings.html" ? "/settings" : null;
+          : null;
         if (!returnPath) return json(400, {ok: false, error: "invalid"});
         const state = randomBytes(32).toString("hex"), verifier = randomBytes(32).toString("hex");
         const challenge = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
@@ -351,7 +366,7 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
         const reject = (status: number) => json(status, {ok: false, error: "cloud_auth_unavailable"}, {"set-cookie": pendingCookie("", 0)});
         const pending = unseal("cloud-pending", cookies.get(pendingName));
         if (!pending || pending.app !== appId || pending.state !== url.searchParams.get("state") || typeof pending.verifier !== "string"
-          || typeof pending.until !== "number" || pending.until <= now() || (pending.returnPath !== "/join" && pending.returnPath !== "/settings")) return reject(400);
+          || typeof pending.until !== "number" || pending.until <= now() || pending.returnPath !== "/join") return reject(400);
         const code = url.searchParams.get("code");
         if (!code || !/^enso_[0-9a-f]{64}$/.test(code)) return reject(400);
         try {
@@ -437,12 +452,28 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
           const c = await accounts.canJoin(app, who);
           const live = c.reason === "member" && c.membership && c.person ? c.membership : undefined;
           const participation = live && o.participation ? await o.participation({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }) : null;
+          const home = live && o.home && (who.personId === null || who.personId === live.personId)
+            ? await o.home({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }) : null;
           return json(200, {
-            app: appId, phoneMasked: maskPhone(who.e164), membership: publicMembership(c.membership),
+            app: appId, ...(["ntwrk", "friends"].includes(appId) && c.reason !== "review" ? { signupView: signupAccountView(appId, accounts.phoneHash(who.e164)) } : {}), phoneMasked: maskPhone(who.e164), membership: publicMembership(c.membership),
             smsOptedIn: c.reason !== "review" && await accounts.optedIn(appId, who.e164),
             canJoin: c.canJoin, ...(c.reason && c.reason !== "member" ? { reason: c.reason } : {}),
             ...(participation ? { participation } : {}),
+            ...(home ? { home } : {}),
           });
+        });
+
+      case "POST /api/me/home":
+        if (!o.onHome) return json(404, { ok: false, error: "not_found" });
+        return withSession(async who => {
+          const input = parseHome(b);
+          if (!input) return json(400, { ok: false, error: "invalid" });
+          const c = await accounts.canJoin(app, who);
+          const live = c.reason === "member" && c.person && c.membership;
+          if (!live || (who.personId !== null && who.personId !== live.personId) || !["active", "onboarding"].includes(live.state)) return json(403, { ok: false, error: "review" });
+          const home = await o.onHome!({ app, personId: live.personId, memberId: live.memberId, e164: who.e164 }, input);
+          if (home === "runtime_change_unsupported") return json(409, { ok: false, error: "home_runtime_conflict" });
+          return home ? json(200, { ok: true, home }) : json(403, { ok: false, error: "review" });
         });
 
       case "POST /api/me/resume":
@@ -458,6 +489,10 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
 
       case "POST /api/join":
         return withSession(async who => {
+          // Updated forms bind the reviewed fields to the displayed account. Check before
+          // recording age, creating a person or accepting consent; another tab may change cookies.
+          if (b.signupView !== undefined && b.signupView !== signupAccountView(appId, accounts.phoneHash(who.e164)))
+            return json(409, { ok: false, error: "account_changed" });
           const input = parseJoin(b);
           if (!input) return json(400, { ok: false, error: "invalid" });
           try {

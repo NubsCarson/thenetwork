@@ -18,10 +18,10 @@ describe("Streamable HTTP, 2026-07-28", () => {
     expect(d.body!.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("the-network");
 
     const l = await rpc(env, NTWRK, "tools/list");
-    expect(l.body!.result.tools.map((t: any) => t.name)).toEqual(["app_info", "start_signup", "check_status", "submit_profile", "get_updates"]);
+    expect(l.body!.result.tools.map((t: any) => t.name)).toEqual(["app_info", "start_signup", "prepare_signup", "check_status", "submit_profile", "get_updates"]);
     for (const t of l.body!.result.tools) {
-      // Every tool but submit_profile only reads; submit_profile adds to the person's own profile (never destructive).
-      const ro = t.name !== "submit_profile";
+      // Profile submission and reading updates modify the person's own state.
+      const ro = !["submit_profile", "get_updates", "prepare_signup"].includes(t.name);
       expect(t.annotations).toEqual({ title: expect.any(String), readOnlyHint: ro, destructiveHint: false, idempotentHint: ro, openWorldHint: false });
       expect(t.inputSchema.additionalProperties).toBe(false);
     }
@@ -82,7 +82,7 @@ describe("Streamable HTTP, 2026-07-28", () => {
     const future = await rpc(env, NTWRK, "initialize", { protocolVersion: "2030-01-01", capabilities: {} }, { modern: false });
     expect(future.body!.result.protocolVersion).toBe("2025-11-25");
     const list = await rpc(env, NTWRK, "tools/list", {}, { modern: false, headers: { "mcp-protocol-version": "2025-06-18" } });
-    expect(list.body!.result.tools).toHaveLength(5);
+    expect(list.body!.result.tools).toHaveLength(6);
     const tool = await call(env, NTWRK, "app_info", {}, { modern: false });
     expect(tool.body!.result.structuredContent.apps.map((a: any) => a.id)).toEqual(["ntwrk", "slop", "peon", "friends"]);
   });
@@ -94,6 +94,25 @@ describe("Streamable HTTP, 2026-07-28", () => {
     expect(r.res.headers.get("www-authenticate")).toBe('Bearer resource_metadata="https://slop.date/.well-known/oauth-protected-resource/mcp", scope="membership:read"');
     // A bad token on any call is 401, never served as anonymous.
     expect((await call(env, NTWRK, "app_info", {}, { token: "ntwa_forged" })).res.status).toBe(401);
+  });
+
+  test("active membership status stays read-only and does not promise matching or delivery", async () => {
+    const env = setup();
+    await addMember(env, PHONE_A, [{ app: "friends", state: "active" }]);
+    const connection = await connect(env, "friends.help", PHONE_A, { scope: "membership:read" });
+    const person = (await env.accounts.personFor(PHONE_A))!;
+    const before = await env.people.getMembership(person.id, "friends");
+    const sends = env.provider.sent.length;
+    const r = await call(env, `${origin("friends.help")}/mcp`, "check_status", {}, { token: connection.token.access_token });
+    expect(r.res.status).toBe(200);
+    expect(r.body!.result.isError).toBe(false);
+    const status = r.body!.result.structuredContent;
+    expect(status).toMatchObject({ app: "friends", status: "active", manage_url: "mailto:help@ntwrk.party" });
+    // Membership is confirmed; no delivery or matching capability was supplied to this handler.
+    expect(status.next_step).not.toMatch(/\b(texts?|messages?|matching|introductions?|ready)\b/i);
+    expect(status.next_step).toMatch(/signed up/i);
+    expect(await env.people.getMembership(person.id, "friends")).toEqual(before);
+    expect(env.provider.sent.length).toBe(sends);
   });
 });
 
@@ -141,13 +160,13 @@ describe("surface=openai hides slop", () => {
 });
 
 describe("no tool accepts a phone number or a code", () => {
-  test("every input schema has only `app` (and submit_profile's `about`, get_updates' `update_token`), and extra fields are refused, not ignored", async () => {
+  test("only the authenticated draft accepts a first name/home city; all unlisted fields are refused", async () => {
     const env = setup();
     await addMember(env, PHONE_A, [{ app: "peon", state: "active" }]);
     for (const url of [NTWRK, OPENAI, `${origin("slop.date")}/mcp`]) {
       for (const t of (await rpc(env, url, "tools/list")).body!.result.tools) {
-        expect(Object.keys(t.inputSchema.properties)).toEqual(t.name === "submit_profile" ? ["app", "about"] : t.name === "get_updates" ? ["app", "update_token"] : ["app"]);
-        expect(JSON.stringify(t.inputSchema)).not.toMatch(/phone|code|otp|name|age|birth/i);
+        expect(Object.keys(t.inputSchema.properties)).toEqual(t.name === "submit_profile" ? ["app", "about"] : t.name === "get_updates" ? ["app", "update_token"] : t.name === "prepare_signup" ? ["app", "firstName", "homeCity"] : ["app"]);
+        expect(JSON.stringify(t.inputSchema)).not.toMatch(t.name === "prepare_signup" ? /phone|code|otp|age|birth|orientation|gender/i : /phone|code|otp|name|age|birth/i);
       }
     }
     const sends = env.provider.sent.length;

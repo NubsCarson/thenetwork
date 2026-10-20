@@ -26,22 +26,23 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { SQL } from "bun";
 import { isDeepStrictEqual } from "node:util";
-import { DAY, RealClock, type Clock, type MemberId } from "@thenetwork/core";
-import type { ActionResult, NetworkOptions, ReviewDecision, ReviewOptions } from "../src/network.ts";
+import { DAY, LLMBudget, RealClock, recommenderLLM, type Clock, type City, type MemberId } from "@thenetwork/core";
+import type { ActionResult, NetworkOptions, NetworkState, ReviewDecision, ReviewOptions } from "../src/network.ts";
 import { brandOf, copy as ntwrkCopy, copyFor, ELIZA_NOTICE, type Copy } from "../src/copy.ts";
 import { isMinor } from "@thenetwork/core";
 import { ageAnswer, agesStated } from "../src/classify.ts";
 import { NetworkRuntime, type RuntimeHost } from "./runtime.ts";
 import { effectiveParticipation } from "./snapshot.ts";
 import { Inbox, type CollectedReply } from "./inbox.ts";
-import { TURN_PATH, TURN_RECEIPT_PATH, SET_STATE_PATH, SIGNALS_PATH, UPDATES_PATH, type SetStateRequest, type TurnRequest, type TurnResponse } from "../../core/src/svc/contract.ts";
+import { networkRoutePolicy, routeEnvelopeAllowed, sameNetworkAuthority, type NetworkRoutePolicy } from "./route-authority.ts";
+import { TURN_PATH, TURN_RECEIPT_PATH, SET_STATE_PATH, SIGNALS_PATH, UPDATES_PATH, RELAY_PHOTO_RESOLVE_PATH, parseApprovedRelayPhotos, type SetStateRequest, type TurnRequest, type TurnResponse } from "../../core/src/svc/contract.ts";
 import { SVC_MIN_SECRET, svcVerify } from "../../core/src/svc/svc-auth.ts";
 import { readCapped } from "../../platform/src/body.ts";
 import { canJoin } from "../../core/src/policy.ts";
 import { CostLedger, costRatesFromEnv, PgCostSink } from "./cost.ts";
 import { BlooioAdapter, type ChannelAdapter, type DirectKind, type Outbound } from "./channel.ts";
 import { APPS, isAppId, keywordApp, lookingFor, POWERED_BY, type AppId, type AppInfo } from "../../platform/src/apps.ts";
-import { Accounts, type AccountHooks, type JoinHookContext, type MemberHookContext } from "../../platform/src/accounts.ts";
+import { Accounts, homeCityOf, type AccountHooks, type HomeInput, type JoinHookContext, type MemberHookContext } from "../../platform/src/accounts.ts";
 import { joinAgeCheck } from "../../platform/src/age.ts";
 import { detectKeyword as platformKeyword, keywordEvent, leaveTarget, resolveConsent, stopScope, type StopScope } from "../../platform/src/consent.ts";
 import { devShortcutsAllowed, isProduction, platformEnv, type Env } from "../../platform/src/env.ts";
@@ -53,6 +54,7 @@ import { otpProviderFromEnv } from "../../platform/src/otp.ts";
 import { turnstileFromEnv } from "../../platform/src/turnstile.ts";
 import type { PeerInfo } from "../../platform/src/api.ts";
 import { PHOTO_APPS, PgPhotoStore, PhotoService, photoStorageFromEnv, type PhotoRater, type PhotoStorage } from "../../platform/src/photos.ts";
+import { PhotoRelayService, PgPhotoRelayStore, type PhotoRelayPolicy, type PhotoRelayItem } from "../../platform/src/photo-relay.ts";
 import { appearanceFacet, type AppearanceScore, type RatingSubject } from "../../engine/src/packs/slop/appearance.ts";
 import { fetchMediaCapped, PhotoIntake, type PhotoIntakeDeps } from "./photoIntake.ts";
 import { BIAS_EVERY_MS, biasAlerts, biasReport, type BiasMember, type StoredBiasReport } from "./bias.ts";
@@ -88,7 +90,7 @@ export const RETIRED_ENV = ["STOP_HELP_OWNER", "STOP_HELP_GATEWAY_SECRET"] as co
  */
 export function turnSecretProblem(env: Record<string, string | undefined> = process.env): string | undefined {
   const secret = env.SERVICE_TURN_SECRET;
-  const on = !!secret || env.NETWORK_CHANNEL === "eliza_cloud";
+  const on = !!secret || env.NETWORK_CHANNEL === "eliza_cloud" || env.NETWORK_ROUTE_AUTHORITY_POLICY !== undefined;
   if (!on) return undefined;
   if (!secret || secret.length < SVC_MIN_SECRET) return `SERVICE_TURN_SECRET must have at least ${SVC_MIN_SECRET} characters when the turn path is on`;
   return undefined;
@@ -170,6 +172,10 @@ export interface ServiceOptions {
   env?: Env;
   /** Photo storage (platform photos.ts). Default: PHOTO_STORAGE from the environment; null turns photos off. */
   photoStorage?: PhotoStorage | null;
+  /** Explicit approved per-item notice/reviewer authority. Ordinary runtime leaves this absent. */
+  photoRelayPolicy?: PhotoRelayPolicy;
+  /** Fixed public backend origin of selected-item capability fetches, never a model URL. */
+  photoDeliveryOrigin?: string;
   /** The relay classifier (a trusted test or simulation boundary). Default: relayClassifierFromEnv (Clef when configured, else rules only). */
   relayClassifier?: RelayClassifierHook;
   /** The appearance rater (server.ts: makeClefRaterFromEnv behind withRetry). Undefined: ratings are off; photos still work. */
@@ -218,22 +224,33 @@ const JOIN_FILLER = new Set(["hi", "hey", "hello", "yo", "im", "i'm", "i", "am",
  * only in a short answer: one name at most, and filler words ("Sam, 29", "Kim 16"). In a sentence
  * ("Sounds good, 7 works for me") it is not an age.
  */
-export function parseJoinText(text: string, appWords: readonly string[], nameOk: boolean): { age?: number; name?: string } {
+export function parseJoinText(text: string, appWords: readonly string[], nameOk: boolean): { age?: number; name?: string; homeCity?: City; invalidHome?: boolean } {
   const t = text.normalize("NFKC").trim();
-  const stated = agesStated(t);
-  let age = stated.explicit ?? stated.age ?? ageAnswer(t);
+  const homes = [...t.matchAll(/(?:\b(?:my home(?: city)?(?: is| in|:)?|i live in|i am based in|i'm based in)|(?:^|[.!?;,]\s*)(?:home(?: city)?(?: is| in|:)?|based in))\s+([^.!?;,\n]+)/gi)];
+  let nameText = homes.reduce((text, m) => text.replace(m[0], " "), t);
+  // A reply such as "Ari, 29, San Francisco" explicitly names a home too.
+  // Remove only a known, delimited city before the conservative bare-age check.
+  const suffix = /[,;]\s*([^,;.!?\n]+)[.!?]?\s*$/.exec(nameText);
+  const suffixCity = suffix ? homeCityOf(suffix[1]) : undefined;
+  if (suffixCity) nameText = nameText.slice(0, suffix!.index);
+  const cities = [...homes.map(m => homeCityOf(m[1])), ...(suffixCity ? [suffixCity] : [])];
+  const invalidHome = cities.some(c => !c) || new Set(cities).size > 1;
+  const stated = agesStated(nameText);
+  let age = stated.explicit ?? stated.age ?? ageAnswer(nameText);
   if (age === undefined) {
-    const nums = [...t.matchAll(/(?:^|[\s,.;:(])(\d{1,3})(?=$|[\s,.;:!)])/g)];
-    const others = t.replace(/\d+/g, " ").replace(/[^\p{L}' ]+/gu, " ").split(/\s+/).filter(Boolean).map(lower)
+    const nums = [...nameText.matchAll(/(?:^|[\s,.;:(])(\d{1,3})(?=$|[\s,.;:!)])/g)];
+    const others = nameText.replace(/\d+/g, " ").replace(/[^\p{L}' ]+/gu, " ").split(/\s+/).filter(Boolean).map(lower)
       .filter(w => !JOIN_FILLER.has(w) && !appWords.includes(w));
-    if (nums.length === 1 && others.length <= 1 && !/\d[^\d\s,.;:!)]|[^\d\s,.;:(]\d/.test(t)) age = Number(nums[0]![1]);
+    if (nums.length === 1 && others.length <= 1 && !/\d[^\d\s,.;:!)]|[^\d\s,.;:(]\d/.test(nameText)) age = Number(nums[0]![1]);
   }
   if (age !== undefined && !(age > 0 && age < 120)) age = undefined;
-  if (!nameOk && age === undefined) return {};
-  const words = t.replace(/[^\p{L}' -]+/gu, " ").split(/[\s-]+/).filter(Boolean);
+  if (!nameOk && age === undefined) return { ...(cities[0] ? { homeCity: cities[0] } : {}), ...(invalidHome ? { invalidHome: true } : {}) };
+  const words = nameText.replace(/[^\p{L}' -]+/gu, " ").split(/[\s-]+/).filter(Boolean);
   const name = words.find(w => /^\p{L}[\p{L}']{0,29}$/u.test(w) && !NOT_NAMES.has(lower(w)) && !appWords.includes(lower(w)));
-  return { ...(age !== undefined ? { age } : {}), ...(name ? { name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() } : {}) };
+  return { ...(age !== undefined ? { age } : {}), ...(name ? { name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() } : {}), ...(cities[0] ? { homeCity: cities[0] } : {}), ...(invalidHome ? { invalidHome: true } : {}) };
 }
+
+class RouteAuthorityExpiredError extends Error {}
 
 export class NetworkService implements RuntimeHost {
   readonly sql: SQL;
@@ -270,6 +287,8 @@ export class NetworkService implements RuntimeHost {
   private readonly forgetListeners: Array<(ctx: MemberHookContext) => Promise<unknown> | unknown> = [];
   /** Private member photos (slop; verified adults only). */
   readonly photos: PhotoService;
+  readonly photoRelay: PhotoRelayService;
+  private readonly photoDeliveryOrigin?: string;
   /** Photos sent by text (photoIntake.ts). */
   readonly photoIntake: PhotoIntake;
   /** Review items already alerted for passing their app's SLA (this instance). */
@@ -280,6 +299,8 @@ export class NetworkService implements RuntimeHost {
 
   private readonly relayClassifier?: RelayClassifierHook;
 
+  private readonly routePolicy: NetworkRoutePolicy | undefined;
+
   constructor(o: ServiceOptions) {
     this.relayClassifier = o.relayClassifier;
     if (o.network?.review && o.network.review !== "human") throw new Error(`review mode "${o.network.review}" is refused: production review is "human" only (runbook-real 7.4)`);
@@ -287,6 +308,7 @@ export class NetworkService implements RuntimeHost {
     this.instance = o.instance ?? `${process.pid}`;
     this.log = o.log ?? console.log;
     this.env = o.env ?? process.env;
+    this.routePolicy = networkRoutePolicy(this.env);
     this.secret = o.webhookSecret;
     this.consoleToken = o.consoleToken || undefined;
     this.secrets = o.webhookSecrets ?? {};
@@ -310,6 +332,13 @@ export class NetworkService implements RuntimeHost {
     this.sql = new SQL({ url: o.url, max: Math.max(8, 2 * specs.length + 4), connection: { application_name: `network-service:${this.instance}` } });
     this.people = o.people ?? new PgPeopleStore(this.sql);
     this.cost = new CostLedger({ sink: new PgCostSink(this.sql), clock: this.clock, rates: costRatesFromEnv(this.env), log: this.log });
+    // Opt-in only. One process-wide budget covers all apps and provider retries.
+    const judgeOn = this.env.NETWORK_ENGINE_JUDGE === "1";
+    const judgeUsd = Number(this.env.NETWORK_ENGINE_JUDGE_BUDGET_USD ?? 1);
+    const judgeRequests = Number(this.env.NETWORK_ENGINE_JUDGE_MAX_REQUESTS ?? 100);
+    if (judgeOn && (!Number.isFinite(judgeUsd) || judgeUsd <= 0 || !Number.isSafeInteger(judgeRequests) || judgeRequests <= 0))
+      throw new Error("NETWORK_ENGINE_JUDGE needs a positive dollar budget and a positive integer request limit");
+    const judgeBudget = judgeOn ? new LLMBudget({ maxCostMicro: judgeUsd * 1e6, maxRequests: judgeRequests }) : undefined;
     this.accounts = new Accounts(this.people, { hashKey: this.hashKey, now: () => this.clock.now(), env: this.env, apps: id => this.apps[id], hooks: this.hooks() });
     if (o.notify !== false) this.notify = new Notifier(o.notify ?? new PgNotifyStore(this.sql), { get: personId => this.notifyRecipient(personId) });
     for (const spec of specs) {
@@ -319,16 +348,27 @@ export class NetworkService implements RuntimeHost {
       // Dev only: the stored switch of these networks starts on (a new state); production always starts off.
       const devOn = (o.devMatching ?? []).includes(id);
       if (devOn && !devShortcutsAllowed(this.env)) throw new Error("devMatching is for PLATFORM_ENV=dev only: production matching is turned on by an admin in the console");
-      this.runtimes.set(id, new NetworkRuntime(this, { id, app: this.apps[app], city, matchingAllowed: spec.matchingEnabled ?? true, network: devOn ? { ...o.network, matchingEnabled: true } : o.network, adapter: o.adapter }));
+      const network = { ...o.network,
+        ...(judgeBudget && !o.network?.engineLLM ? { engineLLM: recommenderLLM({ ...this.cost.llmHooks(app, "engine_judge"), budget: judgeBudget }) } : {}),
+        ...(devOn ? { matchingEnabled: true } : {}),
+      };
+      this.runtimes.set(id, new NetworkRuntime(this, { id, app: this.apps[app], city, matchingAllowed: spec.matchingEnabled ?? true, network, adapter: o.adapter }));
     }
     this.photoBaseUrl = o.photoBaseUrl ?? this.env.PHOTO_VIEW_BASE_URL ?? undefined;
     this.photos = new PhotoService({
       people: this.people, meta: new PgPhotoStore(this.sql), storage: o.photoStorage === null ? undefined : o.photoStorage ?? photoStorageFromEnv(this.env),
       signingKey: key, now: () => this.clock.now(), rater: o.photoRater && this.cost.meterRater(o.photoRater), log: this.log,
-      eligible: (personId, app) => this.verifiedAdult(personId, app),
-      banned: personId => this.personBanned(personId),
+      eligible: (personId, app, tx) => this.verifiedAdult(personId, app, tx),
+      banned: (personId, tx) => this.personBanned(personId, tx),
       onRating: (personId, app, score, subject) => this.writeRating(personId, app, score, subject),
       onRemoved: (personId, app) => this.dropRatings(personId, app),
+    });
+    this.photoDeliveryOrigin = o.photoDeliveryOrigin;
+    this.photoRelay = new PhotoRelayService({
+      store: new PgPhotoRelayStore(this.sql), photos: this.photos, signingKey: key, now: () => this.clock.now(),
+      ...(o.photoRelayPolicy && !this.routePolicy ? { policy: o.photoRelayPolicy } : {}),
+      authorize: (input, tx) => this.photoRelayParties(input, tx),
+      threads: (app, personId) => this.photoRelayThreads(app, personId),
     });
     this.photoIntake = new PhotoIntake({
       people: this.people, accounts: this.accounts, photos: this.photos, phoneKey: e164 => this.phoneKey(e164), now: () => this.clock.now(),
@@ -337,6 +377,47 @@ export class NetworkService implements RuntimeHost {
     });
     this.audit = o.audit ?? new PgAudit(o.auditUrl ?? o.url);
     this.inbox = new Inbox({ sql: this.sql, clock: this.clock, log: this.log, senderKey: sender => this.phoneKey(sender), handle: (ev, app) => this.inbound(ev, app && isAppId(app) ? { app } : {}) });
+  }
+
+  /** Reuse canonical account policy inside the caller's existing PostgreSQL transaction. */
+  accountsFor(tx: SQL): Accounts {
+    return new Accounts(new PgPeopleStore(tx), { hashKey: this.hashKey, now: () => this.clock.now(), env: this.env, apps: id => this.apps[id] });
+  }
+
+  private async photoRelayParties(input: { app: AppId; threadId: string; senderPersonId: string }, transaction?: SQL) {
+    if (this.routePolicy) return;
+    const read = async (tx: SQL) => {
+      await tx`select set_config('app.app_id', ${input.app}, true)`;
+      const [member] = await tx`select m.id,m.home_city from network.members m join platform.memberships p
+        on p.app_id=m.app_id and p.member_id=m.id and p.person_id=m.person_id
+        where m.app_id=${input.app} and m.person_id=${input.senderPersonId}`;
+      const rt = member && this.runtimeForHome(input.app, member.home_city as string);
+      return rt?.relayPhotoParties(input, tx);
+    };
+    return transaction ? read(transaction) : this.sql.begin(read);
+  }
+
+  private async photoRelayThreads(app: AppId, senderPersonId: string): Promise<{ id: string; label: string }[]> {
+    if (this.routePolicy) return [];
+    return this.sql.begin(async tx => {
+      await tx`select set_config('app.app_id', ${app}, true)`;
+      const [member] = await tx`select m.id,m.home_city from network.members m join platform.memberships p
+        on p.app_id=m.app_id and p.member_id=m.id and p.person_id=m.person_id
+        where m.app_id=${app} and m.person_id=${senderPersonId}`;
+      const rt = member && this.runtimeForHome(app, member.home_city as string);
+      if (!rt) return [];
+      const [row] = await tx`select state from network.network_state where id=${rt.pg.id}`;
+      if (!row?.state) return [];
+      const state = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as NetworkState;
+      const threads: { id: string; label: string }[] = [];
+      for (const op of state.opps.filter(o => o.participants.includes(member.id as MemberId))) {
+        const pair = await rt.relayPhotoParties({ app, threadId: op.id, senderPersonId }, tx);
+        if (!pair) continue;
+        const [other] = await tx`select name from network.members where app_id=${app} and id=${pair.recipientMemberId}`;
+        threads.push({ id: op.id, label: typeof other?.name === "string" ? other.name.trim().split(/\s+/)[0] || "Your match" : "Your match" });
+      }
+      return threads;
+    });
   }
 
   /** The service for every row of platform.networks, with the platform.apps policy rows. */
@@ -369,14 +450,19 @@ export class NetworkService implements RuntimeHost {
     for (const r of this.runtimes.values()) if (r.app.id === app && (city === undefined || r.city === city)) return r;
     return undefined;
   }
-  /** The network of the app that holds this member (a second city of an app is its own network). */
+  /** A registered home owns its conversation; an unserved home uses this app's existing default. */
+  runtimeForHome(app: AppId, homeCity: string): NetworkRuntime | undefined {
+    return this.runtimeFor(app, homeCity) ?? this.runtimeFor(app);
+  }
+
+  conversationCities(rt: NetworkRuntime): readonly string[] {
+    return ["nyc", "sf", "la"].filter(city => this.runtimeForHome(rt.app.id, city) === rt);
+  }
+
+  /** The same registry ownership is used by snapshot loading, address books and member actions. */
   async runtimeOfMember(app: AppId, memberId: string): Promise<NetworkRuntime | undefined> {
-    for (const r of this.runtimes.values()) {
-      if (r.app.id !== app) continue;
-      await r.identities();
-      if (r.addressOf(memberId as MemberId)) return r;
-    }
-    return undefined;
+    const [row] = await this.runtimeFor(app)?.scoped(tx => tx`select home_city from network.members where app_id=${app} and id=${memberId} and account_status not in ('invited','removed')`) ?? [];
+    return row ? this.runtimeForHome(app, row.home_city) : undefined;
   }
   private copyOf(app: AppInfo): Copy {
     if (app.id === "ntwrk") return ntwrkCopy;
@@ -558,6 +644,11 @@ export class NetworkService implements RuntimeHost {
     };
   }
 
+  /** Send-time authorization for a queued notification, including after a restart. */
+  async notificationCurrent(id: string): Promise<boolean> {
+    return this.notify ? this.notify.stillNeeded(id, this.clock.now()) : false;
+  }
+
   /** Once per tick: close stale delivery outcomes, then send what the inbox has due. */
   async notifyTick(): Promise<void> {
     if (!this.notify) return;
@@ -599,17 +690,18 @@ export class NetworkService implements RuntimeHost {
    * first name, age) and what the person gave at join (neighborhood, interests). The phone stays in
    * platform.phone_identities. Written with app.app_id set (migration 0004).
    */
-  async createMember(rt: NetworkRuntime, m: Membership, info: { age: number; firstName: string; neighborhood?: string; interests?: string[]; zip?: string }) {
+  async createMember(rt: NetworkRuntime, m: Membership, info: { age: number; firstName: string; homeCity?: string; neighborhood?: string; interests?: string[]; zip?: string }) {
     const now = new Date(this.clock.now());
+    const homeCity = info.homeCity ?? homeCityOf(m.profile.homeCity) ?? rt.city;
     // The app's categories (packs.ts): slop is dating and only for adults; peon is work; friends is social and hobby.
     const prefs = { ...rt.wiring.prefs(info.age), quietHours: [21, 9], formats: ["one_to_one", "small_group", "event"], maxTravelMinutes: 45, onlyWhenAsked: false };
     await this.sql.begin(async tx => {
       await tx`select set_config('app.app_id', ${rt.app.id}, true)`;
       await tx`insert into network.members (app_id, id, person_id, name, home_city, home_area, account_status, age, prefs, joined_at)
-        values (${rt.app.id}, ${m.memberId}, ${m.personId}, ${info.firstName}, ${rt.city}, ${info.neighborhood ?? null}, 'active', ${info.age}, ${prefs}::jsonb, ${now})
+        values (${rt.app.id}, ${m.memberId}, ${m.personId}, ${info.firstName}, ${homeCity}, ${info.neighborhood ?? null}, 'active', ${info.age}, ${prefs}::jsonb, ${now})
         on conflict (id) do update set person_id = excluded.person_id, name = excluded.name, home_city = excluded.home_city, home_area = excluded.home_area,
           account_status = 'active', age = excluded.age, joined_at = excluded.joined_at, opted_out = false`;
-      if (info.neighborhood) await tx`insert into network.presence (app_id, member_id, city, type, areas) values (${rt.app.id}, ${m.memberId}, ${rt.city}, 'home', ${tx.array([info.neighborhood], "TEXT")})`;
+      if (info.neighborhood || info.homeCity) await tx`insert into network.presence (app_id, member_id, city, type, areas) values (${rt.app.id}, ${m.memberId}, ${homeCity}, 'home', ${tx.array(info.neighborhood ? [info.neighborhood] : [], "TEXT")})`;
       // slop dates by distance from a zip (a coarse cell; agent_private, never shown).
       if (info.zip && rt.app.id === "slop") {
         await tx`insert into network.facets (app_id, id, member_id, kind, value, tags, privacy_scope, provenance, source, confidence, status, valid_from)
@@ -664,10 +756,10 @@ export class NetworkService implements RuntimeHost {
 
   /** A web join (POST /api/join): the member row, then the welcome through the normal send path. */
   private async joined(ctx: JoinHookContext) {
-    const rt = this.runtimeFor(ctx.app.id);
+    const rt = this.runtimeForHome(ctx.app.id, ctx.input.homeCity ?? this.runtimeFor(ctx.app.id)?.city ?? "");
     if (!rt) throw new Error(`no network runs for ${ctx.app.id}`);
     if (ctx.membership.state !== "active") return; // waitlist or a recycled number: staff first
-    await this.createMember(rt, ctx.membership, { age: ctx.age, firstName: ctx.input.firstName, neighborhood: ctx.input.neighborhood, interests: ctx.input.interests, zip: ctx.input.zip });
+    await this.createMember(rt, ctx.membership, { age: ctx.age, firstName: ctx.input.firstName, homeCity: ctx.input.homeCity, neighborhood: ctx.input.neighborhood, interests: ctx.input.interests, zip: ctx.input.zip });
     await rt.unitOfWork(n => { n.welcomeJoined(ctx.membership.memberId); });
   }
 
@@ -680,7 +772,7 @@ export class NetworkService implements RuntimeHost {
     const ms = (await this.people.memberships(personId)).filter(m => m.state !== "removed" && m.state !== "invited" && (scope === "global" || m.app === app.id));
     for (const m of ms) {
       if (m.state === "active") await this.people.putMembership({ ...m, state: "paused" });
-      const rt = this.runtimeFor(m.app);
+      const rt = await this.runtimeOfMember(m.app, m.memberId);
       if (!rt || (skip && skip.rt === rt && skip.memberId === m.memberId)) continue;
       await rt.unitOfWork(async n => {
         await n.onInbound({ id: `stop:${m.memberId}:${this.clock.now()}`, memberId: m.memberId, body: "STOP", ts: this.clock.now(), channel: "imessage", keyword: "STOP" });
@@ -697,7 +789,7 @@ export class NetworkService implements RuntimeHost {
 
   /** Leave one app: the Network forgets the member, then the save deletes every row that names them (the forget path). */
   private async forget(app: AppInfo, memberId: MemberId) {
-    const rt = this.runtimeFor(app.id);
+    const rt = await this.runtimeOfMember(app.id, memberId) ?? this.runtimeFor(app.id);
     if (!rt) return;
     await rt.unitOfWork(n => { n.forgetMember(memberId); rt.unit.forget.add(memberId); });
   }
@@ -757,6 +849,48 @@ export class NetworkService implements RuntimeHost {
     });
   }
 
+  private async memberHome(ctx: MemberHookContext): Promise<HomeInput | null> {
+    const [row] = await this.runtimeFor(ctx.app.id)?.scoped(tx => tx`select home_city, home_area from network.members where app_id=${ctx.app.id} and id=${ctx.memberId} and person_id=${ctx.personId}::uuid`) ?? [];
+    const homeCity = homeCityOf(row?.home_city);
+    return homeCity ? { homeCity, ...(row.home_area ? { neighborhood: row.home_area } : {}) } : null;
+  }
+
+  private async correctHome(ctx: MemberHookContext, input: HomeInput): Promise<HomeInput | "runtime_change_unsupported" | null> {
+    // Hold this app's runtime locks while checking ownership and updating the home, so an inbound
+    // unit cannot observe a partial correction. Cross-runtime moves are refused below.
+    const runtimes = [...this.runtimes.values()].filter(r => r.app.id === ctx.app.id).sort((a, b) => a.id.localeCompare(b.id));
+    const locked = (i: number): Promise<HomeInput | "runtime_change_unsupported" | null> => i < runtimes.length
+      ? runtimes[i]!.store.withLock(() => locked(i + 1))
+      : this.sql.begin(async tx => {
+        await tx`select set_config('app.app_id', ${ctx.app.id}, true)`;
+        const [member] = await tx`select m.home_city, m.home_area, pm.profile from network.members m
+          join platform.memberships pm on pm.app_id=m.app_id and pm.member_id=m.id and pm.person_id=m.person_id
+          join platform.people p on p.id=m.person_id
+          join platform.phone_identities ph on ph.person_id=p.id and ph.e164=${ctx.e164}
+          where m.app_id=${ctx.app.id} and m.id=${ctx.memberId} and m.person_id=${ctx.personId}::uuid
+            and pm.state in ('active','onboarding') and pm.review is null and p.deleted_at is null and ph.hold is null
+            and m.account_status not in ('invited','removed','restricted')
+            and not exists(select 1 from platform.bans b where b.person_id=p.id or b.phone_hash=${this.phoneKey(ctx.e164)})
+          for update of m, pm, p, ph`;
+        if (!member) return null;
+        // Moving between existing runtime stores needs a full conversation-state transfer. Never
+        // silently abandon that state; an unserved home still uses the same default runtime.
+        if (this.runtimeForHome(ctx.app.id, member.home_city) !== this.runtimeForHome(ctx.app.id, input.homeCity)) return "runtime_change_unsupported";
+        const homes = await tx`select city, areas from network.presence where app_id=${ctx.app.id} and member_id=${ctx.memberId} and type='home'`;
+        const area = input.neighborhood ?? null, areas = area ? [area] : [];
+        const profile = { ...member.profile, homeCity: input.homeCity };
+        if (area) profile.neighborhood = area; else delete profile.neighborhood;
+        if (member.home_city === input.homeCity && member.home_area === area && JSON.stringify(member.profile) === JSON.stringify(profile)
+          && homes.length === 1 && homes[0]!.city === input.homeCity && JSON.stringify(homes[0]!.areas) === JSON.stringify(areas)) return input;
+        await tx`update platform.memberships set profile=${profile}::jsonb where app_id=${ctx.app.id} and person_id=${ctx.personId}::uuid`;
+        await tx`update network.members set home_city=${input.homeCity}, home_area=${area} where app_id=${ctx.app.id} and id=${ctx.memberId}`;
+        await tx`delete from network.presence where app_id=${ctx.app.id} and member_id=${ctx.memberId} and type='home'`;
+        await tx`insert into network.presence(app_id,member_id,city,type,areas) values (${ctx.app.id},${ctx.memberId},${input.homeCity},'home',${tx.array(areas,"TEXT")})`;
+        return input;
+      });
+    return locked(0);
+  }
+
   /**
    * The public API the four sites call (/api/*). Built on first use: outside dev it needs an OTP
    * provider (OTP_PROVIDER=twilio) and Turnstile (TURNSTILE_SECRET_KEY); the dev shortcuts refuse.
@@ -765,9 +899,11 @@ export class NetworkService implements RuntimeHost {
     this.api ??= createPublicApi({
       store: this.people, turnstile: this.apiOptions?.turnstile ?? turnstileFromEnv(this.env),
       hashKey: this.hashKey, apps: this.apps, env: this.env,
-      now: () => this.clock.now(), log: this.log, ...this.apiOptions, ...this.hooks(), photos: this.photos,
+      now: () => this.clock.now(), log: this.log, ...this.apiOptions, ...this.hooks(), photos: this.photos, photoRelay: this.photoRelay,
       participation: ctx => this.memberParticipation(ctx.app, ctx.memberId),
       onResume: ctx => this.resumeMember(ctx.app, ctx.memberId),
+      home: ctx => this.memberHome(ctx),
+      onHome: (ctx, input) => this.correctHome(ctx, input),
       // Each code Twilio Verify sends is a cost row (cost.ts).
       otp: this.cost.meterOtp(this.apiOptions?.otp ?? otpProviderFromEnv(this.env)),
     });
@@ -859,7 +995,16 @@ export class NetworkService implements RuntimeHost {
     if (!this.inboundTurn()) await this.lineAdapter()?.engaged?.(ev.from);
     const route = await this.route(ev, o.app);
     const app = this.apps[route.app];
-    const rt = this.runtimeFor(route.app);
+    const joinedMember = (await this.memberApps(ev.from)).find(m => m.app === route.app);
+    let rt = joinedMember && await this.runtimeOfMember(route.app, joinedMember.memberId);
+    if (!rt) {
+      for (const candidate of this.runtimes.values()) {
+        if (candidate.app.id !== route.app) continue;
+        await candidate.identities();
+        if (candidate.memberOf(ev.from)) { rt = candidate; break; }
+      }
+    }
+    rt ||= this.runtimeFor(route.app);
     if (!rt) { this.log(`[inbound] no network runs for ${route.app}; not stored`); return "no_network"; }
     // Only the routed network's address book (each runtime refreshes its own inside its units of work).
     await rt.identities();
@@ -901,7 +1046,8 @@ export class NetworkService implements RuntimeHost {
     const leavingId = leaveTarget(ev.text, this.apps);
     const leaving = leavingId ? this.apps[leavingId] : undefined;
     if (leaving && e164) {
-      const lrt = this.runtimeFor(leaving.id);
+      const leaveMember = (await this.memberApps(ev.from)).find(m => m.app === leaving.id);
+      const lrt = (leaveMember && await this.runtimeOfMember(leaving.id, leaveMember.memberId)) || this.runtimeFor(leaving.id);
       if (lrt && lrt !== rt) await lrt.identities();
       const lid = lrt?.memberOf(ev.from);
       if (lrt && lid) {
@@ -1024,7 +1170,7 @@ export class NetworkService implements RuntimeHost {
    */
   async submitProfile(personId: string, appId: AppId, e164: string, text: string): Promise<"accepted" | "not_member"> {
     const m = await this.people.getMembership(personId, appId);
-    const rt = this.runtimeFor(appId);
+    const rt = m && await this.runtimeOfMember(appId, m.memberId);
     if (!m || !rt || !["active", "onboarding"].includes(m.state)) return "not_member";
     if (await this.accounts.banned(e164)) return "not_member";
     const t = this.clock.now(), rowId = `agent_${randomUUID()}`;
@@ -1191,9 +1337,14 @@ export class NetworkService implements RuntimeHost {
     if (p && p.app !== app.id) p = undefined;
     const said = parseJoinText(ev.text, this.appWords(), !!p);
     const age = said.age ?? p?.age ?? undefined, name = said.name ?? p?.name ?? undefined;
+    const homeCity = said.homeCity ?? p?.homeCity;
     const ask = invited ? c.invited(app.minJoinAge) : c.joinAsk(app.minJoinAge);
     if (age === undefined) {
-      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: name ?? null, age: null, at: t });
+      if (said.invalidHome) {
+        await this.direct(rt, ev.from, "Tell me your home city: New York or San Francisco / Bay Area. Include your first name and age.", `sys:${rowId}`, "reply");
+        return "join_asked";
+      }
+      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: name ?? null, age: null, ...(homeCity ? { homeCity } : {}), at: t });
       const { count } = await this.people.hit(`join_ask:${app.id}:${key}`, DAY, t);
       if (count <= 3) await this.direct(rt, ev.from, ask, `sys:${rowId}`, "reply");
       return "join_asked";
@@ -1208,8 +1359,12 @@ export class NetworkService implements RuntimeHost {
       this.log(`[inbound] under the join age for ${app.id}: declined, nothing stored`);
       return "under_age";
     }
+    if (said.invalidHome) {
+      await this.direct(rt, ev.from, "Tell me your home city: New York or San Francisco / Bay Area. Include your first name and age.", `sys:${rowId}`, "reply");
+      return "join_asked";
+    }
     if (!name) {
-      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: null, age, at: t });
+      await this.people.putPending({ phoneHash: key, kind: "join", app: app.id, name: null, age, ...(homeCity ? { homeCity } : {}), at: t });
       await this.direct(rt, ev.from, c.joinNeedName, `sys:${rowId}`, "reply");
       return "join_asked";
     }
@@ -1222,12 +1377,13 @@ export class NetworkService implements RuntimeHost {
     const others = (await this.people.memberships(who.id)).filter(m => m.app !== app.id && m.state !== "removed" && m.state !== "invited");
     const membership: Membership = {
       app: app.id, personId: who.id, memberId: existing?.state === "invited" ? existing.memberId : `${app.id}_${randomUUID()}`,
-      state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: name, profile: {}, joinedAt: t, leftAt: null,
+      state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: name, profile: homeCity ? { homeCity } : {}, joinedAt: t, leftAt: null,
     };
     await this.people.putMembership(membership);
     await this.accounts.recordConsent({ e164, app: app.id, line: ev.to ? normalizeAddress(ev.to) : null, state: "opted_in", source: "inbound_message", wording: ask, ref: rowId, at: this.consentAt(ev) });
     if (membership.state !== "active") return "joined";
-    await this.createMember(rt, membership, { age: Math.min(age, check.effective ?? age), firstName: name });
+    rt = this.runtimeForHome(app.id, homeCity ?? rt.city) ?? rt;
+    await this.createMember(rt, membership, { age: Math.min(age, check.effective ?? age), firstName: name, homeCity });
     // Their answer is their first message: the Network welcomes them as a reply to it.
     await this.memberMessage(rt, membership.memberId, ev, rowId, undefined);
     // A person who uses another app with this number: the link notice (never names the other app).
@@ -1259,17 +1415,17 @@ export class NetworkService implements RuntimeHost {
       // A member under 18 (or of unknown age) is never enrolled in slop.date from this question; they may
       // still join it on its own site (founder decision 1), where matching and photos stay 18+.
       for (const id of wants.filter(a => a !== "slop" || (lowest !== undefined && lowest >= 18))) {
-        const app = this.apps[id], art = this.runtimeFor(id)!;
+        const app = this.apps[id], homeCity = homeCityOf(ntwrk.profile.homeCity), art = this.runtimeForHome(id, homeCity ?? this.runtimeFor(id)!.city)!;
         const existing = await this.people.getMembership(person.id, id);
         if (existing && existing.state !== "removed" && existing.state !== "invited") { joined.push(app); continue; }
         if (lowest === undefined || !joinAgeCheck(lowest, lowest, app).ok) continue;
         const m: Membership = {
           app: id, personId: person.id, memberId: existing?.state === "invited" ? existing.memberId : `${id}_${randomUUID()}`,
-          state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: ntwrk.firstName, profile: {}, joinedAt: t, leftAt: null,
+          state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null, firstName: ntwrk.firstName, profile: homeCity ? { homeCity } : {}, joinedAt: t, leftAt: null,
         };
         await this.people.putMembership(m);
         await this.accounts.recordConsent({ e164, app: id, state: "opted_in", source: "looking_for", wording: asked, ref: `${rowId}:${id}`, at: this.consentAt(ev) });
-        if (m.state === "active") await this.createMember(art, m, { age: lowest, firstName: ntwrk.firstName ?? "there" });
+        if (m.state === "active") await this.createMember(art, m, { age: lowest, firstName: ntwrk.firstName ?? "there", homeCity });
         joined.push(app);
       }
     }
@@ -1354,12 +1510,14 @@ export class NetworkService implements RuntimeHost {
    * person's lowest age is checked by PhotoService), and no failed age check recorded by staff
    * (verify:age:fail). Founder decision 9: no ID check, a stated age is enough.
    */
-  private async verifiedAdult(personId: string, app: AppId): Promise<boolean> {
-    const m = await this.people.getMembership(personId, app);
+  private async verifiedAdult(personId: string, app: AppId, transaction?: SQL): Promise<boolean> {
+    const people = transaction ? new PgPeopleStore(transaction) : this.people;
+    const m = await people.getMembership(personId, app);
     const rt = this.runtimeFor(app);
     if (!m || !rt || !["active", "paused", "onboarding"].includes(m.state)) return false;
-    const rows = await rt.scoped(tx => tx`select m.age, f.tags, f.valid_from from network.members m left join network.facets f on f.app_id = m.app_id and f.member_id = m.id and f.status <> 'rejected'
-      and exists (select 1 from unnest(f.tags) t where t like 'verify:age:%') where m.app_id = ${app} and m.id = ${m.memberId} order by f.valid_from desc nulls last, f.id desc`) as any[];
+    const read = (tx: SQL) => tx`select m.age, f.tags, f.valid_from from network.members m left join network.facets f on f.app_id = m.app_id and f.member_id = m.id and f.status <> 'rejected'
+      and exists (select 1 from unnest(f.tags) t where t like 'verify:age:%') where m.app_id = ${app} and m.id = ${m.memberId} order by f.valid_from desc nulls last, f.id desc`;
+    const rows = (transaction ? await read(transaction) : await rt.scoped(read)) as any[];
     if (!rows.length || !(rows[0].age >= 18)) return false;
     // Founder decision 9 (AGENTS.md): no ID check; the stated age (18+ on the person and the member) is
     // enough. A staff-recorded failed age check still refuses.
@@ -1398,10 +1556,11 @@ export class NetworkService implements RuntimeHost {
   }
 
   /** A ban on the person, or on any phone they have (platform.bans). */
-  async personBanned(personId: string): Promise<boolean> {
-    const hashes = await this.people.phoneHashesOf(personId);
-    if (await this.people.isBanned(hashes[0] ?? "", personId)) return true;
-    for (const h of hashes.slice(1)) if (await this.people.isBanned(h)) return true;
+  async personBanned(personId: string, transaction?: SQL): Promise<boolean> {
+    const people = transaction ? new PgPeopleStore(transaction) : this.people;
+    const hashes = await people.phoneHashesOf(personId);
+    if (await people.isBanned(hashes[0] ?? "", personId)) return true;
+    for (const h of hashes.slice(1)) if (await people.isBanned(h)) return true;
     return false;
   }
 
@@ -1438,7 +1597,7 @@ export class NetworkService implements RuntimeHost {
     if (!personId) return { members: [{ rt, memberId }] };
     const members: { rt: NetworkRuntime; memberId: MemberId }[] = [];
     for (const m of await this.people.memberships(personId)) {
-      const r = this.runtimeFor(m.app);
+      const r = await this.runtimeOfMember(m.app, m.memberId);
       if (r && m.state !== "removed" && m.state !== "invited") members.push({ rt: r, memberId: m.memberId as MemberId });
     }
     if (!members.some(x => x.rt === rt && x.memberId === memberId)) members.push({ rt, memberId });
@@ -1618,10 +1777,16 @@ export class NetworkService implements RuntimeHost {
   }
 
   /** Agent actions inherit one completed open turn; receipts stay on that original inbound owner. */
+  private assertLockedRoute(value: unknown): void {
+    if (this.routePolicy && (!routeEnvelopeAllowed(this.routePolicy, value, this.clock.now())
+      || !sameNetworkAuthority(value, this.routePolicy.authority))) throw new RouteAuthorityExpiredError();
+  }
+
   private async sharedAction(path: string, b: Row, signedId: string, raw: string): Promise<Response> {
     const stateAction = path === SET_STATE_PATH;
     const keys = stateAction ? ["channel","messageId","app","memberId","idempotencyKey","state","from","until","note"]
       : path === SIGNALS_PATH ? ["channel","messageId","app","memberId","signals"] : ["channel","messageId","app","memberId"];
+    if (b.networkAuthority !== undefined) keys.push("networkAuthority");
     const key = stateAction ? b.idempotencyKey : `${b.messageId}:${path === SIGNALS_PATH ? "signals" : "updates"}`;
     if (!isAppId(b.app) || typeof b.memberId !== "string" || !b.memberId.trim() || b.memberId.length > 256
       || typeof key !== "string" || !key.trim() || key.length > 512 || /[\r\n\u0000]/.test(key) || signedId !== key
@@ -1642,7 +1807,7 @@ export class NetworkService implements RuntimeHost {
     const turnId = `msg:${b.channel}:${b.messageId}`;
     const [original] = await this.sql`select sender_hash,response from platform.inbound where id=${turnId} and status='done'`;
     if (!original || original.response?.outcome !== "open" || original.response.app !== app || original.response.memberId !== memberId) return json({error:"turn_scope_invalid",retryable:false},403);
-    const who = await this.accounts.byPhoneHash(original.sender_hash), rt = this.runtimeFor(app);
+    const who = await this.accounts.byPhoneHash(original.sender_hash), rt = await this.runtimeOfMember(app, memberId);
     if (!who || !rt) return json({error:"membership_unavailable",retryable:false},403);
     const authorized = async () => (await this.accounts.activeMembership(rt.app,{e164:who.e164,personId:who.person.id}))?.membership.memberId === memberId;
     if (!await authorized()) return json({error:"membership_unavailable",retryable:false},403);
@@ -1653,9 +1818,10 @@ export class NetworkService implements RuntimeHost {
       await tx`select set_config('app.app_id',${app},true)`;
       await tx`select member_id from platform.memberships where person_id=${who.person.id} and app_id=${app} for update`;
       await tx`select id from network.members where app_id=${app} and id=${memberId} for update`;
-      const [turn] = await tx`select status,response,sender_hash,action_receipts from platform.inbound where id=${turnId} for update`;
+      const [turn] = await tx`select status,response,sender_hash,action_receipts,network_authority from platform.inbound where id=${turnId} for update`;
       if (!turn || turn.status !== "done" || turn.sender_hash !== original.sender_hash || turn.response?.outcome !== "open"
         || turn.response.app !== app || turn.response.memberId !== memberId || !await authorized()) throw new Error("Original turn authority changed");
+      this.assertLockedRoute(turn.network_authority);
       return turn;
     };
     try {
@@ -1673,12 +1839,28 @@ export class NetworkService implements RuntimeHost {
       });
       if (claim.response) return claim.response;
       const complete = async (tx: SQL, result: Row) => {
+        this.assertLockedRoute(b.networkAuthority);
         const saved = await tx`update platform.inbound set action_receipts=jsonb_set(action_receipts,array[${id}],${{requestHash:digest,state:"completed",response:result}}::jsonb)
           where id=${turnId} and status='done' and action_receipts->${id}->>'requestHash'=${digest} and action_receipts->${id}->>'state'='processing' returning id`;
         if (!saved.length) throw new Error("Action ownership changed before completion");
       };
       if (path === UPDATES_PATH) {
         if (!await authorized()) throw new Error("Membership revoked before updates");
+        // Seen state, surface activity and the action receipt commit together. A
+        // blocked notification write may outlive the route window; complete()
+        // rechecks it and rolls the entire transaction back in that case.
+        if (this.notify!.store instanceof PgNotifyStore) {
+          const result = await this.sql.begin(async tx => {
+            await lock(tx);
+            const notifications = new Notifier(new PgNotifyStore(tx), {get: personId => this.notifyRecipient(personId)}, this.notify!.cfg);
+            const items = await notifications.readUpdates(who.person.id, "web", this.clock.now(), undefined, {app});
+            const result = {items:items.map(item => ({summary:item.summary}))};
+            await complete(tx, result);
+            return result;
+          });
+          return json(result);
+        }
+        if (this.routePolicy) return json({error:"canonical_updates_unavailable",retryable:false},503);
         const result = {items:(await this.updatesFor(who.person.id,app,"web")).map(item=>({summary:item.summary}))};
         await this.sql.begin(async tx=>{await lock(tx);await complete(tx,result);});
         return json(result);
@@ -1718,7 +1900,8 @@ export class NetworkService implements RuntimeHost {
         return result;
       });
       return json(result);
-    } catch {
+    } catch (error) {
+      if (error instanceof RouteAuthorityExpiredError) return json({error:"route_authority_invalid",retryable:false},403);
       await this.sql`update platform.inbound set action_receipts=jsonb_set(action_receipts,array[${id}],${{requestHash:digest,state:"unresolved"}}::jsonb)
         where id=${turnId} and status='done' and action_receipts->${id}->>'requestHash'=${digest} and action_receipts->${id}->>'state'='processing'`;
       return json({error:"action_unresolved",retryable:false},409);
@@ -1741,18 +1924,32 @@ export class NetworkService implements RuntimeHost {
     try { b = JSON.parse(raw); } catch { return json({error: "invalid_request"}, 400); }
     if (!b || typeof b !== "object" || Array.isArray(b) || (b.channel !== "blooio" && b.channel !== "twilio")
       || typeof b.messageId !== "string" || !b.messageId.trim() || b.messageId.length > 512 || /[\r\n\u0000]/.test(b.messageId)) return json({error: "invalid_request"}, 400);
+    if (!routeEnvelopeAllowed(this.routePolicy, b.networkAuthority, this.clock.now())) return json({error:"route_authority_invalid"},403);
+    if (this.routePolicy) {
+      const [original] = await this.sql`select network_authority from platform.inbound where id=${`msg:${b.channel}:${b.messageId}`}`;
+      if (original) {
+        if (!sameNetworkAuthority(original.network_authority, this.routePolicy.authority)) return json({error:"route_authority_invalid"},403);
+      } else if (url.pathname !== TURN_PATH || this.clock.now() >= this.routePolicy.admitUntil) {
+        return json({error:"route_admission_closed"},403);
+      }
+    }
     if ([SET_STATE_PATH,SIGNALS_PATH,UPDATES_PATH].includes(url.pathname)) return this.sharedAction(url.pathname,b,auth.id,raw);
     const digest = createHash("sha256").update(raw).digest("hex");
     const id = `msg:${b.channel}:${b.messageId}`;
     if (url.pathname === TURN_RECEIPT_PATH) {
-      if (auth.id !== `${b.messageId}:receipt` || Object.keys(b).length !== 6
+      if (auth.id !== `${b.messageId}:receipt` || Object.keys(b).length !== (b.networkAuthority === undefined ? 6 : 7)
+        || Object.keys(b).some(k => !["channel","messageId","replyIds","providerMessageIds","historyRecorded","outcome","networkAuthority"].includes(k))
         || !Array.isArray(b.replyIds) || !b.replyIds.every(x => typeof x === "string")
         || !Array.isArray(b.providerMessageIds) || !b.providerMessageIds.every(x => typeof x === "string" && x.trim())
         || typeof b.historyRecorded !== "boolean" || !["accepted", "unknown", "rejected"].includes(b.outcome as string)) return json({error: "invalid_request"}, 400);
       const result = await this.sql.begin(async tx => {
-        const [claim] = await tx`select status,response,receipt_hash,receipt,replies from platform.inbound where id=${id} for update`;
+        const [claim] = await tx`select status,response,receipt_hash,receipt,replies,network_authority from platform.inbound where id=${id} for update`;
         if (!claim || claim.status !== "done" || claim.response?.outcome !== "handled") return json({error: "turn_unavailable", retryable: false}, 409);
-        if (claim.receipt_hash === digest) return json({ok: true, replayed: true});
+        if (this.routePolicy && !routeEnvelopeAllowed(this.routePolicy, claim.network_authority, this.clock.now()))
+          return json({error:"route_authority_invalid",retryable:false},403);
+        // Cloud and Gateway independently acknowledge the same acceptance. JSON
+        // object key order may differ; the authenticated receipt values may not.
+        if (claim.receipt_hash === digest || (claim.receipt_hash && isDeepStrictEqual(claim.receipt, b))) return json({ok: true, replayed: true});
         if (claim.receipt_hash && !(claim.receipt?.outcome === "unknown" && ["accepted", "rejected"].includes(b.outcome as string))) return json({error: "receipt_conflict", retryable: false}, 409);
         const collected = claim.replies as CollectedReply[];
         // A handled turn with no reply (a quiet acknowledgement, an under-13 decline) takes an empty receipt and is done.
@@ -1775,7 +1972,7 @@ export class NetworkService implements RuntimeHost {
           await tx`select set_config('app.app_id', ${claim.response.app}, true)`;
           await tx`update network.messages set status=${status} where app_id=${claim.response.app} and inbound_id=${id} and id in ${tx(b.replyIds as string[])} and status in ('collected','send_unknown')`;
           // The same replies in the line's thread history (the leak guard's core-14 check reads accepted ones).
-          const lrt = this.runtimeFor(claim.response.app);
+          const lrt = claim.response.memberId ? await this.runtimeOfMember(claim.response.app, claim.response.memberId) : this.runtimeFor(claim.response.app);
           if (lrt?.adapter instanceof BlooioAdapter) await lrt.adapter.queue.collectedReceipt(tx, b.replyIds as string[], b.outcome as "accepted" | "unknown" | "rejected", this.clock.now());
         }
         await tx`update platform.inbound set receipt_hash=${digest},receipt=${b}::jsonb where id=${id}`;
@@ -1783,11 +1980,11 @@ export class NetworkService implements RuntimeHost {
       });
       if (result.status===200 && b.outcome==="accepted") {
         const [claim]=await this.sql`select response from platform.inbound where id=${id}`;
-        if (isAppId(claim?.response?.app)) await this.runtimeFor(claim.response.app)?.projectNotifications();
+        if (isAppId(claim?.response?.app)) await (claim.response.memberId ? await this.runtimeOfMember(claim.response.app, claim.response.memberId) : this.runtimeFor(claim.response.app))?.projectNotifications();
       }
       return result;
     }
-    if (auth.id !== b.messageId || Object.keys(b).some(k => !["messageId","channel","from","to","text","transport","receivedAt","app"].includes(k))
+    if (auth.id !== b.messageId || Object.keys(b).some(k => !["messageId","channel","from","to","text","transport","receivedAt","app","networkAuthority"].includes(k))
       || typeof b.from !== "string" || normalizePhone(b.from) !== b.from
       || (b.to !== null && (typeof b.to !== "string" || normalizePhone(b.to) !== b.to))
       || typeof b.text !== "string" || !b.text.trim() || !["imessage","sms","rcs","unknown"].includes(b.transport as string)
@@ -1821,7 +2018,7 @@ export class NetworkService implements RuntimeHost {
       // canonical join prompt gets the signed account-free onboarding reason.
       const accountEligible = policyAllowed && age !== undefined && canJoin(age);
       const onboarding = policyAllowed && age === undefined && outcome === "join_asked" && !turn.memberId;
-      const rt = turn.app ? this.runtimeFor(turn.app) : undefined;
+      const rt = turn.app ? (turn.memberId ? await this.runtimeOfMember(turn.app, turn.memberId) : this.runtimeFor(turn.app)) : undefined;
       const binding = rt && turn.memberId ? await this.accounts.activeMembership(rt.app, {e164: input.from, personId: person?.id ?? null}) : undefined;
       // activeMembership owns the known join-age check; first contact, STOP, leave and policy denials create no service counter.
       if (accountEligible && binding && binding.membership.memberId === turn.memberId) await this.lineAdapter()?.engaged?.(input.from);
@@ -1833,10 +2030,10 @@ export class NetworkService implements RuntimeHost {
       return {outcome: "handled", replies: collected.map(r => r.body), replyIds: collected.map(r => r.id), delivery: "collected",
         replyKind: collected.length && collected.every(r => r.kind === "compliance") ? "compliance" : "reply", accountEligible,
         app: turn.app ?? null, memberId: turn.memberId ?? null, reason: onboarding ? "onboarding_asked" : outcome === "open" ? "context_unavailable" : outcome, ...(turn.consent ? {consent: turn.consent} : {})} satisfies TurnResponse;
-    });
+    }, this.routePolicy?.admitUntil);
     if (result.status === 200 && result.body && typeof result.body === "object" && "outcome" in result.body && result.body.outcome === "open") {
       const cached = result.body as Extract<TurnResponse, {outcome: "open"}>;
-      const rt = this.runtimeFor(cached.app);
+      const rt = await this.runtimeOfMember(cached.app, cached.memberId);
       const binding = rt && await this.accounts.activeMembership(rt.app, {e164: input.from, personId: null});
       const current = binding?.membership.memberId === cached.memberId ? await rt!.sharedContext(cached.memberId) : null;
       if (!current || !isDeepStrictEqual(current, cached.context)) return json({error: "turn_context_changed", retryable: false}, 409);
@@ -1847,17 +2044,62 @@ export class NetworkService implements RuntimeHost {
         const current = await admission(handled.app ?? undefined);
         if (!current.allowed || current.age !== undefined) return json({error: "turn_onboarding_changed", retryable: false}, 409);
       }
-      if (handled.app) await this.runtimeFor(handled.app)?.projectNotifications();
+      if (handled.app) await (handled.memberId ? await this.runtimeOfMember(handled.app, handled.memberId) : this.runtimeFor(handled.app))?.projectNotifications();
     }
     return json(result.body, result.status);
+  }
+
+  /** Purpose-scoped proof of a successful per-item preview by this actual reviewer. */
+  private photoReviewProof(item:PhotoRelayItem,reviewer:string,until:number):string {
+    const {id,app,photoId,sha256,bytes,contentType,threadId,senderPersonId,recipientPersonId,senderMemberId,recipientMemberId,consentId,consentedAt,expiresAt,policyVersion,policyNotice,notice}=item;
+    return keyedHash(this.hashKey,`photo-review:${JSON.stringify({reviewer,until,id,app,photoId,sha256,bytes,contentType,threadId,senderPersonId,recipientPersonId,senderMemberId,recipientMemberId,consentId,consentedAt,expiresAt,policyVersion,policyNotice,notice})}`);
+  }
+  private validPhotoReview(item:PhotoRelayItem,reviewer:string,value:unknown):boolean {
+    if(typeof value!=="string" || !/^[1-9]\d{0,15}\.[a-f0-9]{64}$/.test(value))return false;
+    const [raw,proof]=value.split("."),until=Number(raw);
+    return Number.isSafeInteger(until) && until>this.clock.now() && until<=item.expiresAt && safeEqual(proof!,this.photoReviewProof(item,reviewer,until));
+  }
+
+  /** Resolve only an existing claimed queue item; no caller-chosen origin or attachment URL. */
+  private async resolveRelayPhoto(req: Request): Promise<Response> {
+    const url=new URL(req.url);
+    if (req.method!=="POST" || url.search) return json({error:"invalid_request"},400);
+    const bytes=await readCapped(req,16*1024);
+    if (bytes==="too_large") return json({error:"payload_too_large"},413);
+    let raw:string,b:Record<string,unknown>;
+    try {raw=new TextDecoder("utf-8",{fatal:true}).decode(bytes);b=JSON.parse(raw);} catch {return json({error:"invalid_request"},400);}
+    const auth=await svcVerify(this.env.SERVICE_TURN_SECRET,{method:"POST",path:RELAY_PHOTO_RESOLVE_PATH,headers:req.headers,body:raw,nowS:Math.floor(this.clock.now()/1000)});
+    if (!auth.ok) return json({error:auth.reason},auth.reason==="no_secret"?503:401);
+    if (!b || typeof b!=="object" || Array.isArray(b) || Object.keys(b).some(k=>!["networkAuthority","id","deliveryId","to","approvedPhotos"].includes(k))
+      || typeof b.id!=="string" || b.id!==auth.id || typeof b.deliveryId!=="string" || typeof b.to!=="string" || normalizePhone(b.to)!==b.to)
+      return json({error:"invalid_request"},400);
+    // Isolated handled-reply realms cannot originate relays, even with a valid envelope.
+    if (!routeEnvelopeAllowed(this.routePolicy,b.networkAuthority,this.clock.now()) || this.routePolicy) return json({error:"route_authority_invalid"},403);
+    const photos=parseApprovedRelayPhotos(b.approvedPhotos);
+    if (!photos || !this.photoDeliveryOrigin || photos.length!==1 || b.deliveryId!==`relay:${photos[0]!.itemId}`) return json({error:"photo_unavailable"},403);
+    const d=photos[0]!,rt=await this.runtimeOfMember(d.app,d.recipientMemberId);
+    if (!rt) return json({error:"photo_unavailable"},403);
+    const allowed=await rt.scoped(async tx=>{
+      const [row]=await tx`select outbound.*,identity.e164 from platform.outbound outbound
+        join network.members member on member.app_id=outbound.app_id and member.id=outbound.member_id
+        join platform.phone_identities identity on identity.person_id=member.person_id
+        where outbound.id=${b.deliveryId as string} and outbound.app_id=${d.app} and identity.e164=${b.to as string}`;
+      if (!row || row.status!=="sending" || row.member_id!==d.recipientMemberId || row.opportunity_id!==d.threadId || row.to_address!==b.to
+        || !isDeepStrictEqual(row.approved_photos,photos)) return false;
+      return (await rt.relayAdmission(tx,{id:row.id,memberId:row.member_id,oppId:row.opportunity_id,approvedPhotos:photos})).ok;
+    });
+    if (!allowed) return json({error:"photo_unavailable"},403);
+    const resolved=await this.photoRelay.issueDelivery(d,d.recipientMemberId,b.id as string,this.photoDeliveryOrigin);
+    return resolved?json({photos:[resolved]}):json({error:"photo_unavailable"},403);
   }
 
   // ------------------------------------------------------------------ HTTP
   /** The HTTP handler: the inbound webhooks and the staff API. The public API is publicFetch (its own port). */
   fetch = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
+    if (url.pathname === RELAY_PHOTO_RESOLVE_PATH) return this.resolveRelayPhoto(req);
     if ([TURN_PATH, TURN_RECEIPT_PATH, SET_STATE_PATH, SIGNALS_PATH, UPDATES_PATH].includes(url.pathname)) return this.sharedTurn(req);
-    if (url.pathname === RELAY_PATH) return relayEndpoint({ sql: this.sql, clock: this.clock, secret: this.env.SERVICE_TURN_SECRET, accounts: this.accounts, runtimeFor: app => this.runtimeFor(app), runtimeOfMember: (app, memberId) => this.runtimeOfMember(app, memberId), ...(this.relayHookFor ? { hookFor: this.relayHookFor } : {}) }, req);
+    if (url.pathname === RELAY_PATH) return relayEndpoint({ sql: this.sql, clock: this.clock, secret: this.env.SERVICE_TURN_SECRET, routePolicy: this.routePolicy, accounts: this.accounts, photos:this.photoRelay, runtimeFor: app => this.runtimeFor(app), runtimeOfMember: (app, memberId) => this.runtimeOfMember(app, memberId), ...(this.relayHookFor ? { hookFor: this.relayHookFor } : {}) }, req);
     let path = url.pathname.replace(/\/+$/, "") || "/";
     try {
       if (path === WEBHOOK_PATH || path.startsWith(`${WEBHOOK_PATH}/`)) {
@@ -1923,10 +2165,27 @@ export class NetworkService implements RuntimeHost {
         const no = need(["reviewer", "safety"]); if (no) return no;
         await this.audit.write({ at: this.clock.now(), actor: user.id, roles: user.roles, action: "read_relay_held", mode: "real", ok: true, app: rt.app.id });
         const held = await rt.readState(n => n.relayHeld());
+        const selected = (await this.photoRelay.held(rt.app.id)).filter(p=>p.threadId && p.app===rt.app.id);
         // The console's HeldText shape: `id` is the item, `memberId` the sender (whose words they are). No recipient id
         // (the console masks `to` as a phone number). relayHeld() already leaves out a sender's text once their age is in doubt.
         return json({ ok: true, network: rt.id, items: held.map(h => ({ id: h.itemId, itemId: h.itemId, app: h.app, kind: h.kind, memberId: h.from, from: h.from, reasons: h.reasons, createdAt: h.at,
-          ...(h.text ? { text: h.text } : h.textHidden ? { minor: true } : {}) })) });
+          ...(h.text ? { text: h.text } : h.textHidden ? { minor: true } : {}) })).concat(selected.map(p=>({id:p.id,itemId:p.id,app:p.app,kind:"photo",memberId:p.senderMemberId,from:p.senderMemberId,reasons:["photo:review"],createdAt:p.createdAt}))) });
+      }
+      const relayPhotoPreview=path.match(/^\/(?:staff\/)?relay\/(pri_[a-zA-Z0-9_-]+)\/photo$/);
+      if (req.method==="GET" && relayPhotoPreview) {
+        const no=need(["safety"]);if(no)return no;
+        await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:"read_relay_photo",targetId:relayPhotoPreview[1]!,mode:"real",ok:true,app:rt.app.id,detail:{phase:"requested"}});
+        const selected=await this.photoRelay.item(relayPhotoPreview[1]!);
+        let media:Awaited<ReturnType<PhotoRelayService["reviewBytes"]>>;
+        try {media=selected?.app===rt.app.id?await this.photoRelay.reviewBytes(selected.id,user.id):undefined;}
+        catch(error){
+          await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:"read_relay_photo",targetId:relayPhotoPreview[1]!,mode:"real",ok:false,app:rt.app.id,detail:{phase:"result"}});
+          throw error;
+        }
+        await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:"read_relay_photo",targetId:relayPhotoPreview[1]!,mode:"real",ok:!!media,app:rt.app.id,detail:{phase:"result"}});
+        const until=selected?Math.min(selected.expiresAt,this.clock.now()+5*60_000):0;
+        return media && selected && until>this.clock.now()?new Response(new Uint8Array(media.bytes).buffer,{headers:{"content-type":media.contentType,"cache-control":"no-store","x-content-type-options":"nosniff",
+          "x-network-photo-review-token":`${until}.${this.photoReviewProof(selected,user.id,until)}`}}):json({ok:false,reason:"photo_unavailable"},403);
       }
       if (path === "/queue/leak-review" || path.startsWith("/queue/leak-review/")) {
         // Texts the outbound queue's leak guard parked (status parked_leak_review): safety staff for this app
@@ -2049,9 +2308,44 @@ export class NetworkService implements RuntimeHost {
         if (itemId.length > 200 || (note !== undefined && note.length > 2000)) return json({ ok: false, error: "invalid_relay_decision" }, 400);
         if (note === undefined || note.trim().length < 5) return json({ ok: false, reason: "reason_required", error: "note_required" }, 409);
         const release = relayPath[2] === "release";
-        const r = await rt.unitOfWork(n => release ? n.releaseRelay(itemId, user.id) : n.rejectRelay(itemId, user.id));
+        const selected = itemId.startsWith("pri_") ? await this.photoRelay.item(itemId) : undefined;
+        if (selected && selected.app !== rt.app.id) return json({ok:false,reason:"not_held"},404);
+        let r: {ok:true;delivered?:boolean}|{ok:false;reason:string};
+        if(selected)await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:release?"relay_release":"relay_reject",targetId:itemId,mode:"real",ok:true,app:rt.app.id,reason:note,detail:{phase:"requested"}});
+        try {
+        if (selected) {
+          if (!release) r = await this.photoRelay.review(itemId,user.id,"unsafe") ? {ok:true} : {ok:false,reason:"not_held"};
+          else {
+            if (!this.validPhotoReview(selected,user.id,b.photoReviewToken) || !await this.photoRelay.reviewAuthorized(itemId,user.id)) {
+              await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:"relay_release",targetId:itemId,mode:"real",ok:false,app:rt.app.id,reason:note,detail:{phase:"result",delivered:false,refused:"photo_preview_required"}});
+              return json({ok:false,reason:"photo_preview_required"},403);
+            }
+            if (selected.state === "pending") {
+              if (!await this.photoRelay.review(itemId,user.id,"safe")) throw new Error("Photo review refused");
+              await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:"relay_release",targetId:itemId,mode:"real",ok:true,app:rt.app.id,reason:note,detail:{phase:"reviewed",delivered:false}});
+            }
+            const photo=await this.photoRelay.approved(itemId);
+            if (!photo) r={ok:false,reason:"photo_unavailable"};
+            else r=await rt.unitOfWork(async net=>{
+              const canonical=await rt.relayParties([photo.senderMemberId,photo.recipientMemberId] as MemberId[]);
+              const outcome=await net.relayRequest({itemId,from:photo.senderMemberId as MemberId,kind:"photo",photoIds:[photo.photoId],matchId:photo.threadId},
+                {photos:{ids:[photo.photoId],showConsent:true,approved:[photo]},canonical});
+              if (outcome.decision !== "sent") return {ok:false as const,reason:outcome.reason};
+              rt.unit.completeAction=async tx=>{
+                if (!this.validPhotoReview(selected,user.id,b.photoReviewToken) || !await this.photoRelay.reviewAuthorized(itemId,user.id,tx)) throw new Error("Photo review expired or authority changed before commit");
+                const claimed=await this.photoRelay.claimForAction(tx,itemId,rt.app.id,photo.threadId,photo.senderMemberId,`photo-selection:${itemId}`);
+                if (!claimed || JSON.stringify(claimed)!==JSON.stringify(photo)) throw new Error("Photo selection changed before commit");
+              };
+              return {ok:true as const,delivered:false}; // Queue handoff is not a provider delivery receipt.
+            });
+          }
+        } else r = await rt.unitOfWork(n => release ? n.releaseRelay(itemId, user.id) : n.rejectRelay(itemId, user.id));
+        } catch(error) {
+          if(selected)await this.audit.write({at:this.clock.now(),actor:user.id,roles:user.roles,action:release?"relay_release":"relay_reject",targetId:itemId,mode:"real",ok:false,app:rt.app.id,reason:note,detail:{phase:"result",delivered:false,refused:"photo_queue_or_review_failed"}});
+          throw error;
+        }
         await this.audit.write({ at: this.clock.now(), actor: user.id, roles: user.roles, action: release ? "relay_release" : "relay_reject", targetId: itemId,
-          mode: "real", ok: r.ok, app: rt.app.id, reason: note, ...("delivered" in r ? { detail: { delivered: r.delivered } } : {}) });
+          mode: "real", ok: r.ok, app: rt.app.id, reason: note, ...(selected?{detail:{phase:"result",delivered:false}}:"delivered" in r ? { detail: { delivered: r.delivered } } : {}) });
         return result(r);
       }
       const verifyPath = path.match(/^\/members\/([^/]+)\/verify$/);

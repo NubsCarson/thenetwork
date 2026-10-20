@@ -1,4 +1,4 @@
-// Phone -> code login, shared by /join and /settings. The person types their own number and the code
+// Phone -> code login, for /join. The person types their own number and the code
 // that we text them; nothing else (no agent, no other page) can enter it for them.
 // Markup contract inside the flow root:
 //   [data-step="phone"]  form[data-form="phone"] with input[name=phone] and an empty [data-turnstile]
@@ -53,7 +53,7 @@ export function mountAuth(root: HTMLElement, onSignedIn: () => Promise<void> | v
     if (error) form.append(error);
     form.addEventListener("submit", async event => {
       event.preventDefault();
-      const result = await busy(form, () => api.cloudAuthStart(location.pathname.startsWith("/settings") ? "/settings" : "/join"));
+      const result = await busy(form, () => api.cloudAuthStart("/join"));
       if (!result.ok) { setError(form, "Sign-in is unavailable. Try again."); return; }
       location.assign(result.data.url);
     });
@@ -65,7 +65,14 @@ function mountOtpAuth(root: HTMLElement, onSignedIn: () => Promise<void> | void)
   const codeForm = $(root, 'form[data-form="code"]') as HTMLFormElement | null;
   if (!phoneForm || !codeForm) return;
   let phone = "";
-  const human = mountTurnstile(phoneForm);
+  const checkPending = root.getAttribute("data-msg-turnstile-wait") ?? "Wait for the check above to finish, then try again.";
+  const checkFailed = root.getAttribute("data-msg-turnstile-failed") ?? "The security check failed. Refresh the page and try again.";
+  const human = mountTurnstile(phoneForm, state => {
+    const error = phoneForm.querySelector<HTMLElement>("[data-error]")?.textContent;
+    const checkError = error === checkPending || error === checkFailed;
+    if (state === "failed" && (!error || checkError)) setError(phoneForm, checkFailed);
+    else if (state === "ready" && checkError) setError(phoneForm, "");
+  });
 
   phoneForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -80,7 +87,7 @@ function mountOtpAuth(root: HTMLElement, onSignedIn: () => Promise<void> | void)
     input.removeAttribute("aria-invalid");
     const token = human?.token();
     if (human && !token) {
-      setError(phoneForm, root.getAttribute("data-msg-turnstile-wait") ?? "Wait for the check above to finish, then try again.");
+      setError(phoneForm, human.state() === "failed" ? checkFailed : checkPending);
       return;
     }
     setError(phoneForm, "");

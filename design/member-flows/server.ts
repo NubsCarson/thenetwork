@@ -29,7 +29,7 @@ Bun.serve({ hostname:'127.0.0.1',port,async fetch(req) {
  }
  const site = SITES.find(s=>s.app===u.searchParams.get('app'));
  const page = u.searchParams.get('page') ?? 'join';
- if (!site || !['join','settings','privacy','terms','404','oauth-phone','oauth-code','oauth-connections'].includes(page)) return new Response('Not found',{status:404});
+ if (!site || !['join','privacy','terms','404','oauth-phone','oauth-code','oauth-connections'].includes(page)) return new Response('Not found',{status:404});
  const file = page.startsWith('oauth-') ? join(root,'packages/mcp/src/pages.ts') : join(site.src,page+'.html');
  if (u.pathname === '/save') {
   if (req.method!=='POST' || req.headers.get('origin')!==origin || req.headers.get('content-type')!=='application/json') return new Response('Forbidden',{status:403});
@@ -73,7 +73,7 @@ Bun.serve({ hostname:'127.0.0.1',port,async fetch(req) {
    html=html.replace(/<script[\s\S]*?<\/script>/g,'').replaceAll('{{TURNSTILE_SITE_KEY}}','').replaceAll('./styles.css',`/asset/styles.css?app=${site.app}&page=join`).replaceAll('../../shared/member.css',`/asset/member.css?app=${site.app}&page=join`);
   }
   const requestedState=u.searchParams.get('state')??'phone';
-  const state=['phone','phone-error','code','code-error','profile','done','member','invite','blocked','loading','account','photos','stop','leave','delete-all','gone','default'].includes(requestedState)?requestedState:'phone';
+  const state=['phone','phone-error','code','code-error','profile','done','member','invite','blocked','loading','default'].includes(requestedState)?requestedState:'phone';
   const injection=`<script>
   const desired=${JSON.stringify(state)};
   document.querySelectorAll('[data-step]').forEach(e=>e.hidden=e.dataset.step!==(desired.endsWith('-error')?desired.replace('-error',''):desired));
@@ -81,8 +81,6 @@ Bun.serve({ hostname:'127.0.0.1',port,async fetch(req) {
   const slots={phoneShown:'(•••) •••-0123',phoneMasked:'(•••) •••-0123',firstName:'Alex',joinedAt:'October 19, 2026',state:'Active',blockedReason:'You must be 13 or older to join.',goneText:'Your data for this app is deleted.'};
   document.querySelectorAll('[data-slot]').forEach(e=>{if(slots[e.dataset.slot])e.textContent=slots[e.dataset.slot]});
   document.querySelectorAll('[data-when]').forEach(e=>e.hidden=['no-membership','paused','has-quiet','stopped'].includes(e.dataset.when));
-  if(desired==='photos') {document.querySelector('[data-step="account"]').hidden=false;const box=document.querySelector('[data-photos]');if(box){box.hidden=false;box.querySelector('[data-photo-consent-text]').textContent='Photo consent is loaded from the service in the live flow.';box.scrollIntoView()}}
-  if(['stop','leave','delete-all'].includes(desired)){document.querySelector('[data-step="account"]').hidden=false;document.querySelector('[data-confirm="'+desired+'"]').showModal()}
   document.querySelectorAll('[name=firstName]').forEach(e=>e.value='Alex');document.querySelectorAll('[name=age]').forEach(e=>e.value='28');
   document.addEventListener('submit',e=>{e.preventDefault();parent.postMessage({type:'notice',text:'Design sample only. Use the runtime to test verification.'},location.origin)});
   document.addEventListener('click',e=>{const node=e.target.closest('[data-edit]');if(node){e.preventDefault();parent.postMessage({type:'select',id:node.dataset.edit,text:node.textContent},location.origin)}else if(e.target.closest('a,button'))e.preventDefault()});

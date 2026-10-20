@@ -18,6 +18,7 @@
 //    to someone is refused, the consent history and the age floor move with the person, and the old
 //    number's sessions end. The phone_changes row (keyed hashes only) is the audit record.
 import { randomUUID } from "node:crypto";
+import type { City } from "../../core/src/types.ts";
 import { DAY } from "../../core/src/clock.ts";
 import { validAge } from "../../core/src/policy.ts";
 import { canJoinApp, joinAgeCheck, lowestAge } from "./age.ts";
@@ -35,9 +36,32 @@ export type NumberChangeError = "same_number" | "review" | "no_person" | "rate_l
 /** Base-profile fields a person may share from one app to another. Sensitive classes are not in this list and never will be. */
 export const SHAREABLE_FIELDS = ["first_name", "city", "age_band", "interests"] as const;
 
+/** Only an explicitly named city/region, never a ZIP or inferred neighborhood. */
+export function homeCityOf(value: unknown): Extract<City, "nyc" | "sf"> | undefined {
+  if (typeof value !== "string") return undefined;
+  const city = value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  if (["nyc", "new york", "new york city"].includes(city)) return "nyc";
+  if (["sf", "san francisco", "bay area", "the bay area"].includes(city)) return "sf";
+  return undefined;
+}
+
+export interface HomeInput { homeCity: Extract<City, "nyc" | "sf">; neighborhood?: string }
+
+/** An own-home edit cannot carry another member's identity or unrelated profile fields. */
+export function parseHome(body: Record<string, unknown>): HomeInput | undefined {
+  if (Object.keys(body).some(k => !["homeCity", "neighborhood"].includes(k))) return undefined;
+  const homeCity = homeCityOf(body.homeCity);
+  if (!homeCity) return undefined;
+  if (body.neighborhood === undefined) return { homeCity };
+  if (typeof body.neighborhood !== "string" || !body.neighborhood.trim() || body.neighborhood.trim().length > 80) return undefined;
+  const neighborhood = body.neighborhood.trim(), coarse = homeCityOf(neighborhood);
+  return coarse && coarse !== homeCity ? undefined : { homeCity, neighborhood };
+}
+
 export interface JoinInput {
   firstName: string;
   age: number;
+  homeCity?: Extract<City, "nyc" | "sf">;
   neighborhood?: string;
   zip?: string;
   interests?: string[];
@@ -66,6 +90,10 @@ export function parseJoin(body: unknown): JoinInput | undefined {
   if (!c || c.sms !== true || (!wording && !version)) return undefined;
   const out: JoinInput = { firstName, age: b.age as number, consent: { sms: true, ...(wording ? { wording } : {}), ...(version ? { version } : {}) } };
   if (b.neighborhood !== undefined) { const v = str(b.neighborhood, 80); if (!v) return undefined; out.neighborhood = v; }
+  const coarseHome = homeCityOf(out.neighborhood);
+  const explicitHome = homeCityOf(b.homeCity);
+  if (b.homeCity !== undefined && (!explicitHome || (coarseHome && coarseHome !== explicitHome))) return undefined;
+  if (explicitHome || coarseHome) out.homeCity = explicitHome ?? coarseHome;
   if (b.zip !== undefined) { if (typeof b.zip !== "string" || !/^\d{5}$/.test(b.zip)) return undefined; out.zip = b.zip; }
   if (b.interests !== undefined) {
     if (!Array.isArray(b.interests) || b.interests.length > 20) return undefined;
@@ -90,6 +118,7 @@ export interface AccountHooks {
   /** The member's own network data for this app (facets, intents, opportunities, messages). */
   onExport?(ctx: MemberHookContext): Promise<unknown> | unknown;
   /** The person's lowest age went down (a stated age on any app): every app's member must follow (a minor is never matched anywhere). */
+  /** Reconcile app state with the stored minimum after each age statement; must be idempotent. */
   onAgeLowered?(ctx: { personId: string; age: number }): Promise<void> | void;
 }
 
@@ -252,11 +281,18 @@ export class Accounts {
   /** Record a stated age: the phone's age floor and the person (if any) keep the lowest. Every app's member follows a lower age. */
   async recordAge(e164: string, person: Person | undefined, age: number): Promise<void> {
     if (!validAge(age)) return;
-    await this.store.noteAgeFloor(this.phoneHash(e164), age, this.now());
-    if (!person) return;
-    const before = (await this.store.getPerson(person.id))?.lowestAge ?? null;
-    const after = await this.store.noteAge(person.id, age);
-    if (before === null || after < before) await this.hooks.onAgeLowered?.({ personId: person.id, age: after });
+    const current = person && await this.store.getPerson(person.id);
+    try {
+      await this.store.noteAgeFloor(this.phoneHash(e164), lowestAge(age, current?.lowestAge)!, this.now());
+    } finally {
+      // A temporary-data cleanup failure must not prevent the existing person-level safety update.
+      if (person) {
+        const after = await this.store.noteAge(person.id, age);
+        // A prior hook may have failed after noteAge committed. Reconcile on retry, even if the
+        // statement is unchanged or older than the stored minimum. The hook only lowers app ages.
+        await this.hooks.onAgeLowered?.({ personId: person.id, age: after });
+      }
+    }
   }
 
   /** A new person for a verified phone (or the tombstone of this phone's earlier person, revived). */
@@ -297,7 +333,6 @@ export class Accounts {
    * Undefined for a number that asked to delete everything (the suppression hash) or is on hold.
    */
   async invite(app: AppInfo, e164: string): Promise<Membership | undefined> {
-    const at = this.now();
     if ((await this.held(e164)) || (await this.store.isSuppressed(this.phoneHash(e164))) || (await this.banned(e164))) return undefined;
     const person = (await this.personFor(e164)) ?? (await this.createPerson(e164, "staff", null));
     const existing = await this.store.getMembership(person.id, app.id);
@@ -319,7 +354,13 @@ export class Accounts {
     let person = await this.personFor(who.e164);
     if (await this.banned(who.e164, person)) return { ok: false, error: "review" };
     const existing = person && (await this.store.getMembership(person.id, app.id));
-    if (existing && existing.state !== "removed" && existing.state !== "invited") return { ok: true, membership: existing };
+    if (existing && existing.state !== "removed" && existing.state !== "invited") {
+      // A repeated join is still an age statement. Keep the membership and consent unchanged,
+      // but propagate a lower age before returning the existing membership.
+      await this.recordAge(who.e164, person, input.age);
+      if (!joinAgeCheck(input.age, await this.lowestAge(who.e164, person), app).ok) return { ok: false, error: "under_age" };
+      return { ok: true, membership: existing };
+    }
     if (app.joinMode === "invite" && existing?.state !== "invited") return { ok: false, error: "invite_only" };
     const age = joinAgeCheck(input.age, await this.lowestAge(who.e164, person), app);
     if (!age.ok) {
@@ -336,7 +377,7 @@ export class Accounts {
       app: app.id, personId: person.id, memberId: existing?.state === "invited" ? existing.memberId : `${app.id}_${randomUUID()}`,
       state: app.joinMode === "waitlist" ? "onboarding" : "active", review: null,
       firstName: input.firstName,
-      profile: Object.fromEntries(Object.entries({ neighborhood: input.neighborhood, zip: input.zip, interests: input.interests, about: input.about }).filter(([, v]) => v !== undefined)),
+      profile: Object.fromEntries(Object.entries({ homeCity: input.homeCity, neighborhood: input.neighborhood, zip: input.zip, interests: input.interests, about: input.about }).filter(([, v]) => v !== undefined)),
       joinedAt: at, leftAt: null,
     };
     await this.store.putMembership(membership);

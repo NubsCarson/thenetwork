@@ -37,30 +37,35 @@ export const AGENTS: Agent[] = [
 ];
 
 /** What a person types into their agent. The tests and the staging rewrite read this exact sentence. */
-export const promptFor = (s: Pick<Site, "domain">) => `Read https://${s.domain}/SKILL.md and follow it.`;
+export const promptFor = (s: Pick<Site, "domain">, version: string) => `Read https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)} and follow it.`;
 
 /** The first text that joins this app on the shared line (packages/platform/src/apps.ts keywordApp). */
 export const keywordFor = (s: Pick<Site, "app">) => (s.app === "ntwrk" ? "network" : s.app);
+
+/** Exact whole-message command accepted by the shared line's existing app router. */
+export const joinMessageFor = (s: Pick<Site, "app">) => `join ${keywordFor(s)}`;
+
+/** Standard SMS composition URI; message-app support for body prefilling varies. */
+export const messagesHref = (s: Pick<Site, "app">, textLine: string) =>
+  `sms:${textLine}?body=${encodeURIComponent(joinMessageFor(s))}`;
 
 const logo = (name: string) => readFileSync(join(import.meta.dir, "shared/logos", `${name}.svg`), "utf8").trim();
 const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 
 /**
- * The logo row for one site ({{AGENTS}} in index.html). Links work with no JavaScript; copy buttons and
- * the text tile's device rules need the page script, so the buttons start hidden.
- * `textLine` is the shared line in E.164: the last tile opens Messages with the join keyword filled in.
+ * The logo row for one site ({{AGENTS}} in index.html). Links work with no JavaScript;
+ * prompt-copy buttons need the page script, so those buttons start hidden.
+ * The shared-line Text Eliza button is separate from this agent chooser.
  */
-export function agentRow(s: Pick<Site, "app" | "domain">, textLine: string): string {
-  const q = encodeURIComponent(promptFor(s));
-  const skill = encodeURIComponent(`https://${s.domain}/SKILL.md`);
+export function agentRow(s: Pick<Site, "domain">, version: string): string {
+  const prompt = promptFor(s, version);
+  const q = encodeURIComponent(prompt);
+  const skill = encodeURIComponent(`https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)}`);
   const tiles = AGENTS.map((a) => {
     const common = `class="l-agent" data-agent="${a.id}" data-tip="${esc(a.name)}" data-toast="${esc(a.toast)}"${a.desktopOnly ? ' data-only="desktop"' : ""}`;
     return a.href
       ? `<a ${common} href="${esc(a.href.replace("{q}", q).replace("{skill}", skill))}" target="_blank" rel="noopener" aria-label="Open in ${esc(a.name)}">${logo(a.logo)}</a>`
       : `<button type="button" ${common} hidden aria-label="Copy the prompt for ${esc(a.name)}">${logo(a.logo)}</button>`;
   });
-  // "?&body=" is the form both Apple Messages and Android accept.
-  const sms = `sms:${textLine}?&amp;body=${encodeURIComponent(keywordFor(s))}`;
-  tiles.push(`<a class="l-agent l-text" data-agent="text" data-tip="Text us" data-only="messages" href="${sms}" aria-label="Join by text message">${logo("imessage")}</a>`);
   return tiles.join("\n    ");
 }

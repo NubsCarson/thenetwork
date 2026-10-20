@@ -10,10 +10,20 @@ import { APP_IDS, type AppId } from "../../packages/platform/src/apps.ts";
 import { proxySignature } from "../../packages/platform/src/proxy.ts";
 import { PHOTO_CONSENT } from "../../packages/platform/src/photos.ts";
 import { pkceS256, sha256hex } from "../../packages/mcp/src/util.ts";
+import { NetworkService } from "../../packages/network/service/service.ts";
+import { DryRunAdapter } from "../../packages/network/service/channel.ts";
 import { createServiceMcp } from "../../packages/network/service/serve.ts";
 import { svcSign } from "../../packages/core/src/svc/svc-auth.ts";
 import { SET_STATE_PATH, TURN_PATH, type TurnRequest } from "../../packages/core/src/svc/contract.ts";
 import { Browser, connectMcp, VERIFIER, newPhone, pgAvailable, rpc, signIn, startStack, toolData, TURN_SECRET, webJoin, type Stack } from "./harness.ts";
+
+import { slopProfiles, type SlopProfile } from "../../packages/engine/src/packs/slop/profile.ts";
+import { mutualMarkets, makeSlopPack, SLOP_ENGINE_DEFAULTS } from "../../packages/engine/src/packs/slop/index.ts";
+import { cellMiles, cellOfZip, zipForArea } from "../../packages/engine/src/packs/slop/zips.ts";
+import { World } from "../../packages/engine/src/world.ts";
+import { extractSlopProfile, slopOnboardTags, validateSlopReading } from "../../packages/engine/src/packs/slop/extract.ts";
+import { readBack, applyCorrection } from "../../packages/engine/src/packs/slop/onboard.ts";
+import { appWiring } from "../../packages/network/service/packs.ts";
 
 const T = 180_000;
 if (!pgAvailable) {
@@ -89,6 +99,233 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
     }, T);
   });
 
+  test("a signed-in member corrects a legacy home atomically without changing identity, consent or history", async () => {
+    const local = await startStack();
+    const db = new SQL({ url: local.url, max: 2 });
+    try {
+      const phone = newPhone(), browser = new Browser();
+      await local.staff("/apps/ntwrk/invite", { phone });
+      await signIn(local, "ntwrk", phone, browser);
+      const info = await (await local.site("ntwrk", "/api/app")).json() as any;
+      expect((await local.site("ntwrk", "/api/join", { browser, json: { firstName: "Theo", age: 32, homeCity: "nyc", neighborhood: "Astoria", consent: { sms: true, version: info.consent.version } } })).status).toBe(200);
+      const [member] = await db`select * from network.members where app_id='ntwrk'`;
+      // Reproduce the actual pre-fix join shape: explicit region retained, runtime city used as home.
+      await db`update network.members set home_area='Bay Area' where id=${member.id}`;
+      await db`update network.presence set areas=ARRAY['Bay Area'] where member_id=${member.id} and type='home'`;
+      await db`update platform.memberships set profile='{"neighborhood":"Bay Area","about":"I enjoy climbing."}'::jsonb where member_id=${member.id}`;
+      const client = await connectMcp(local, "ntwrk", phone, { browser });
+      expect(toolData(await rpc(local, "ntwrk", "/mcp", "tools/call", { name: "submit_profile", arguments: { about: "I enjoy climbing and coffee." } }, client.token!.access_token)).submitted).toBe(true);
+      const before = await (await local.site("ntwrk", "/api/me/export", { browser })).json() as any;
+      const [trip] = await db`insert into network.presence(app_id,member_id,city,type,areas,from_at,to_at) values ('ntwrk',${member.id},'sf','temporary','{}',${new Date(local.clock.now()-DAY)},${new Date(local.clock.now()+DAY)}) returning *`;
+      const correction = { homeCity: "Bay Area", neighborhood: "Bay Area" };
+      const changed = await local.site("ntwrk", "/api/me/home", { browser, json: correction });
+      expect(changed.status).toBe(200);
+      expect((await changed.json() as any).home).toEqual({ homeCity: "sf", neighborhood: "Bay Area" });
+      expect((await (await local.site("ntwrk", "/api/me", { browser })).json() as any).home).toEqual({ homeCity: "sf", neighborhood: "Bay Area" });
+      const after = await (await local.site("ntwrk", "/api/me/export", { browser })).json() as any;
+      expect(after.network.member).toEqual({ ...before.network.member, home_city: "sf" });
+      expect(after.membership).toEqual({ ...before.membership, profile: { ...before.membership.profile, homeCity: "sf" } });
+      expect(after.consent).toEqual(before.consent);
+      expect(after.network.messages).toEqual(before.network.messages);
+      const homes = await db`select * from network.presence where member_id=${member.id} and type='home'`;
+      expect(homes.length).toBe(1);
+      expect(homes[0]!.city).toBe("sf");
+      expect(homes[0]!.areas).toEqual(["Bay Area"]);
+      expect((await db`select * from network.presence where id=${trip.id}`)[0]).toEqual(trip);
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: correction })).status).toBe(200);
+      expect(await db`select * from network.presence where member_id=${member.id} and type='home'`).toEqual(homes);
+      const otherPhone = newPhone(), otherBrowser = new Browser();
+      await local.staff("/apps/ntwrk/invite", { phone: otherPhone });
+      await signIn(local, "ntwrk", otherPhone, otherBrowser);
+      expect((await local.site("ntwrk", "/api/join", { browser: otherBrowser, json: { firstName: "Mira", age: 31, homeCity: "nyc", consent: { sms: true, version: info.consent.version } } })).status).toBe(200);
+      const [other] = await db`select * from network.members where app_id='ntwrk' and id<>${member.id}`;
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { ...correction, memberId: other.id } })).status).toBe(400);
+      expect((await db`select * from network.members where id=${other.id}`)[0]).toEqual(other);
+      const rt = await local.svc.runtimeOfMember("ntwrk", member.id);
+      expect(await rt!.sharedContext(member.id)).toMatchObject({ city: "sf", singlePlayer: true });
+      expect((await rt!.unitOfWork(n => n.engineInput(local.clock.now()))).members.some(m => m.id === member.id)).toBe(false);
+      expect(toolData(await rpc(local, "ntwrk", "/mcp", "tools/call", { name: "check_status", arguments: {} }, client.token!.access_token)).status).toBe("active");
+      expect((await local.site("ntwrk", "/api/me/home", { json: correction })).status).toBe(401);
+      expect((await local.site("friends", "/api/me/home", { browser, json: correction })).status).toBe(401);
+      for (const extra of [{ memberId: member.id }, { personId: member.person_id }, { age: 40 }, { app: "friends" }]) {
+        expect((await local.site("ntwrk", "/api/me/home", { browser, json: { ...correction, ...extra } })).status).toBe(400);
+      }
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "nyc", neighborhood: "Bay Area" } })).status).toBe(400);
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "unknown" } })).status).toBe(400);
+      expect((await local.site("ntwrk", "/api/me/home", { browser, headers: { origin: local.sites.friends.origin }, json: correction })).status).toBe(403);
+
+      // Failure after profile/member updates must roll the entire correction back.
+      await db`create function public.reject_home_fixture() returns trigger language plpgsql as $$ begin if NEW.type='home' then raise exception 'synthetic home failure'; end if; return NEW; end $$`;
+      await db`create trigger reject_home_fixture before insert on network.presence for each row execute function public.reject_home_fixture()`;
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "nyc", neighborhood: "Astoria" } })).status).toBe(500);
+      expect((await db`select home_city from network.members where id=${member.id}`)[0]!.home_city).toBe("sf");
+      expect((await db`select profile from platform.memberships where member_id=${member.id}`)[0]!.profile.homeCity).toBe("sf");
+      expect((await db`select city from network.presence where member_id=${member.id} and type='home'`).map((x:any)=>x.city)).toEqual(["sf"]);
+      await db`drop trigger reject_home_fixture on network.presence`;
+      await db`drop function public.reject_home_fixture()`;
+
+      // Current phone ownership is checked again, not inferred from a still-valid cookie.
+      await db`update platform.phone_identities set hold='recycled_number' where e164=${phone}`;
+      expect((await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "nyc" } })).status).toBe(403);
+      expect((await db`select home_city from network.members where id=${member.id}`)[0]!.home_city).toBe("sf");
+    } finally { await db.close(); await local.close(); }
+  }, T);
+
+  test("home correction refuses a move between existing conversation stores without changing the member", async () => {
+    const local = await startStack({ extraNetwork: "ntwrk:sf" });
+    const db = new SQL({ url: local.url, max: 2 });
+    try {
+      const phone = newPhone(), browser = new Browser();
+      await local.staff("/apps/ntwrk/invite", { phone });
+      await signIn(local, "ntwrk", phone, browser);
+      const info = await (await local.site("ntwrk", "/api/app")).json() as any;
+      expect((await local.site("ntwrk", "/api/join", { browser, json: { firstName: "Mira", age: 31, homeCity: "nyc", neighborhood: "Astoria", consent: { sms: true, version: info.consent.version } } })).status).toBe(200);
+      const before = await (await local.site("ntwrk", "/api/me/export", { browser })).json();
+      const states = await db`select id,state from network.network_state order by id`;
+      const response = await local.site("ntwrk", "/api/me/home", { browser, json: { homeCity: "sf", neighborhood: "Bay Area" } });
+      expect(response.status).toBe(409);
+      expect((await response.json() as any).error).toBe("home_runtime_conflict");
+      expect(await (await local.site("ntwrk", "/api/me/export", { browser })).json()).toEqual(before);
+      expect(await db`select id,state from network.network_state order by id`).toEqual(states);
+    } finally { await db.close(); await local.close(); }
+  }, T);
+
+  test("explicit home survives invited join and out-of-market profile intake without NYC presence", async () => {
+    const local = await startStack();
+    const db = new SQL({ url: local.url, max: 2 });
+    try {
+      const phone = newPhone(), browser = new Browser();
+      expect((await local.staff("/apps/ntwrk/invite", { phone })).status).toBe(200);
+      await signIn(local, "ntwrk", phone, browser);
+      const info = await (await local.site("ntwrk", "/api/app")).json() as any;
+      const joined = await local.site("ntwrk", "/api/join", { browser, json: {
+        firstName: "Theo", age: 32, neighborhood: "Bay Area",
+        consent: { sms: true, version: info.consent.version },
+      }});
+      expect(joined.status).toBe(200);
+      const [member] = await db`select * from network.members where app_id='ntwrk'`;
+      expect(member.home_city).toBe("sf");
+      expect(member.home_area).toBe("Bay Area");
+      expect((await db`select city from network.presence where member_id=${member.id} and type='home'`).map((r:any) => r.city)).toEqual(["sf"]);
+      const client = await connectMcp(local, "ntwrk", phone, { browser });
+      expect(toolData(await rpc(local, "ntwrk", "/mcp", "tools/call", {name:"submit_profile",arguments:{about:"I like climbing and coffee, and I am 32."}}, client.token!.access_token)).submitted).toBe(true);
+      const rt = await local.svc.runtimeOfMember("ntwrk", member.id);
+      expect(rt?.id).toBe("ntwrk:nyc");
+      expect(await rt!.sharedContext(member.id)).toMatchObject({city:"sf",singlePlayer:true});
+      const observed = await rt!.unitOfWork(n => ({age:n.member(member.id).age, minor:n.member(member.id).minor, input:n.engineInput(local.clock.now()), eligible:n.eligible(member.id)}));
+      expect(observed.age).toBe(32);
+      expect(observed.minor).toBe(false);
+      expect(observed.input.members.some(m => m.id === member.id)).toBe(false);
+      expect(observed.eligible).toBe(false);
+      expect(await rt!.unitOfWork(n=>n.eligible("missing" as any,undefined,true))).toBe(false);
+      const [saved] = await db`select state from network.network_state where id='ntwrk:nyc'`;
+      expect(saved.state.members.find((m: any) => m.id === member.id).learned.interests.length).toBeGreaterThan(0);
+      expect((await local.site("ntwrk", "/api/me", {browser})).status).toBe(200);
+      expect(await rt!.unitOfWork(n => n.inNyc(member.id, local.clock.now(), local.clock.now()+DAY))).toBe(false);
+      expect(await rt!.unitOfWork(n => n.eligible(member.id, undefined, true))).toBe(false);
+      expect(await rt!.unitOfWork(n => n.inNyc("missing" as any, local.clock.now(), local.clock.now()+DAY))).toBe(false);
+      const fresh = await NetworkService.fromDatabase({url:local.url,clock:local.clock,env:{PLATFORM_ENV:"dev"},instance:"home-restart",adapter:()=>new DryRunAdapter(()=>{}),log:()=>{}});
+      try {
+        await fresh.start();
+        const restored = await fresh.runtimeOfMember("ntwrk", member.id);
+        const state = await restored!.unitOfWork(n => n.member(member.id));
+        expect(state.age).toBe(32);
+        expect(state.minor).toBe(false);
+        expect(state.learned.interests.size).toBeGreaterThan(0);
+        expect(await restored!.unitOfWork(n => n.eligible(member.id, undefined, true))).toBe(false);
+      } finally { await fresh.close(); }
+      // Genuine NYC travel qualifies only for its complete window; preference or conversation ownership does not.
+      const from = local.clock.now(), to = from + 6 * DAY;
+      const [visit] = await db`insert into network.presence (app_id,member_id,city,type,areas,from_at,to_at) values ('ntwrk',${member.id},'nyc','temporary','{}',${new Date(from-DAY)},${new Date(to+DAY)}) returning id`;
+      expect(await rt!.unitOfWork(n=>n.inNyc(member.id,from,to))).toBe(true);
+      expect(await rt!.sharedContext(member.id)).toMatchObject({city:"sf",singlePlayer:false});
+      expect((await rt!.unitOfWork(n=>n.engineInput(local.clock.now()))).members.some(m=>m.id===member.id)).toBe(false);
+      await db`update network.presence set to_at=${new Date(from+DAY)} where id=${visit.id}`;
+      expect(await rt!.unitOfWork(n=>n.inNyc(member.id,from,to))).toBe(false);
+      expect(await rt!.sharedContext(member.id)).toMatchObject({singlePlayer:true});
+      await db`update network.presence set from_at=${new Date(from-3*DAY)},to_at=${new Date(from-DAY)} where id=${visit.id}`;
+      expect(await rt!.unitOfWork(n=>n.inNyc(member.id,from,to))).toBe(false);
+      await db`update network.presence set from_at=${new Date(from-DAY)},to_at=${new Date(to+DAY)} where id=${visit.id}`;
+      await db`insert into network.presence (app_id,member_id,city,type,areas,from_at,to_at) values ('ntwrk',${member.id},'sf','temporary','{}',${new Date(from+DAY)},${new Date(from+2*DAY)})`;
+      expect(await rt!.unitOfWork(n=>n.inNyc(member.id,from,to))).toBe(false);
+      await db`delete from network.presence where member_id=${member.id} and type='temporary'`;
+      expect(await rt!.unitOfWork(n=>n.inNyc(member.id,from,to))).toBe(false);
+      const conflictPhone = newPhone(), conflictBrowser = new Browser();
+      await local.staff("/apps/ntwrk/invite", {phone:conflictPhone});
+      await signIn(local,"ntwrk",conflictPhone,conflictBrowser);
+      for (const homeCity of ["nyc", "unknown"]) {
+        expect((await local.site("ntwrk", "/api/join", {browser:conflictBrowser,json:{firstName:"Mira",age:31,homeCity,neighborhood:"Bay Area",consent:{sms:true,version:info.consent.version}}})).status).toBe(400);
+      }
+      expect((await db`select * from network.members where app_id='ntwrk'`).length).toBe(1);
+      const nycPhone = newPhone(), nycBrowser = new Browser();
+      await local.staff("/apps/ntwrk/invite", {phone:nycPhone});
+      await signIn(local,"ntwrk",nycPhone,nycBrowser);
+      expect((await local.site("ntwrk", "/api/join", {browser:nycBrowser,json:{firstName:"Mira",age:31,homeCity:"NYC",neighborhood:"Astoria",consent:{sms:true,version:info.consent.version}}})).status).toBe(200);
+      const [nyc] = await db`select * from network.members where app_id='ntwrk' and name='Mira'`;
+      expect(nyc.home_city).toBe("nyc");
+      expect(await local.svc.runtimeFor("ntwrk")!.unitOfWork(n => n.inNyc(nyc.id,local.clock.now(),local.clock.now()+DAY))).toBe(true);
+      expect((await local.svc.runtimeFor("ntwrk")!.unitOfWork(n => n.engineInput(local.clock.now()))).members.map(m=>m.id)).toContain(nyc.id);
+
+    } finally { await db.close(); await local.close(); }
+  }, T);
+
+  test("registry owns served homes once and retains native home across join turns", async () => {
+    const local = await startStack({extraNetwork:"ntwrk:sf"});
+    const db = new SQL({url:local.url,max:2});
+    try {
+      const phone = newPhone(), browser = new Browser();
+      await local.staff("/apps/ntwrk/invite",{phone});
+      await signIn(local,"ntwrk",phone,browser);
+      const info = await (await local.site("ntwrk","/api/app")).json() as any;
+      expect((await local.site("ntwrk","/api/join",{browser,json:{firstName:"Theo",age:32,homeCity:"sf",consent:{sms:true,version:info.consent.version}}})).status).toBe(200);
+      const [sf] = await db`select * from network.members where app_id='ntwrk'`;
+      expect((await local.svc.runtimeOfMember("ntwrk",sf.id))?.id).toBe("ntwrk:sf");
+      expect(await local.svc.runtimeFor("ntwrk","sf")!.sharedContext(sf.id)).toMatchObject({city:"sf",singlePlayer:true});
+      const client = await connectMcp(local,"ntwrk",phone,{browser});
+      expect(toolData(await rpc(local,"ntwrk","/mcp","tools/call",{name:"submit_profile",arguments:{about:"I like climbing and coffee, and I am 32."}},client.token!.access_token)).submitted).toBe(true);
+      await local.text(phone,"I enjoy hiking and climbing.");
+      await local.text(phone,"I enjoy museums on weekends.");
+      await local.text(phone,"I work in software and enjoy cooking.");
+      const messageId = `home-turn-${sf.id}`;
+      const turnBody = JSON.stringify({messageId,channel:"blooio",from:phone,to:null,text:"What is the weather like?",transport:"imessage",receivedAt:local.clock.now(),app:"ntwrk"});
+      const turn = await local.svc.fetch(new Request(`http://127.0.0.1${TURN_PATH}`,{method:"POST",headers:{"content-type":"application/json",...await svcSign(TURN_SECRET,{method:"POST",path:TURN_PATH,id:messageId,body:turnBody,nowS:Math.floor(local.clock.now()/1000)})},body:turnBody}));
+      expect(turn.status).toBe(200);
+      expect(await turn.json()).toMatchObject({outcome:"open",app:"ntwrk",memberId:sf.id,context:{city:"sf",singlePlayer:true}});
+      const nativePhone = newPhone();
+      expect(await local.text(nativePhone,"My home is Bay Area.")).toBe("join_asked");
+      const pending = await local.svc.people.getPending(local.svc.accounts.phoneHash(nativePhone),"join");
+      expect(pending?.homeCity).toBe("sf");
+      expect(await local.text(nativePhone,"Mira, 31")).toBe("joined");
+      const [native] = await db`select * from network.members where app_id='ntwrk' and name='Mira'`;
+      expect(native.home_city).toBe("sf");
+      expect((await local.svc.runtimeOfMember("ntwrk",native.id))?.id).toBe("ntwrk:sf");
+      expect((await db`select city from network.presence where member_id=${native.id}`).some((r:any)=>r.city==='nyc')).toBe(false);
+      for (const rt of local.svc.runtimes.values()) {
+        if (rt.app.id !== "ntwrk") continue;
+        await rt.identities();
+        expect(rt.memberOf(phone)).toBe(rt.id==='ntwrk:sf'?sf.id:undefined);
+        const ids = await rt.unitOfWork(n=>n.memberList().map(m=>m.id));
+        expect(ids.includes(sf.id)).toBe(rt.id==='ntwrk:sf');
+        expect(ids.includes(native.id)).toBe(rt.id==='ntwrk:sf');
+      }
+      expect(await local.text(nativePhone,"I am looking for dating and friends.")).toBe("handled");
+      const children = await db`select app_id,home_city from network.members where person_id=${native.person_id} and app_id<>'ntwrk' order by app_id`;
+      expect(children.map((r:any)=>r.app_id)).toEqual(["friends","slop"]);
+      expect(children.every((r:any)=>r.home_city==='sf')).toBe(true);
+      const memberships = await local.svc.people.memberships(native.person_id);
+      expect(memberships.filter(m=>m.app!=='ntwrk').every(m=>JSON.stringify(m.profile)===JSON.stringify({homeCity:"sf"}))).toBe(true);
+      const completePhone = newPhone();
+      expect(await local.text(completePhone,"Nora, 33, based in the Bay Area.")).toBe("joined");
+      expect((await db`select home_city from network.members where app_id='ntwrk' and name='Nora'`)[0].home_city).toBe("sf");
+      const minorPhone = newPhone();
+      expect(await local.text(minorPhone,"Nora, 12. My home is unknown.")).toBe("under_age");
+      expect(await local.text(minorPhone,"Nora, 33. My home is Bay Area.")).toBe("under_age");
+      const states = await db`select id,state from network.network_state where app_id='ntwrk' order by id`;
+      expect(states.flatMap((r:any)=>r.state.members.filter((m:any)=>m.id===sf.id)).length).toBe(1);
+      expect((await db`select count(*)::int as n from network.messages where member_id=${sf.id} and body='I enjoy hiking and climbing.'`)[0].n).toBe(1);
+    } finally {await db.close();await local.close();}
+  }, T);
+
   test("a session is per app: /api/me on another site never shows this app, and the cookie does not cross", async () => {
     const phone = newPhone();
     const b = new Browser();
@@ -135,7 +372,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
     }
   }, T);
 
-  test("a pause set by text shows on Settings with its end date; resume ends it and keeps messages on (#11)", async () => {
+  test("a pause set by text is readable through the API; resume preserves messaging consent (#11)", async () => {
     // As the Eliza gateway does: a signed /internal/turn for each text, then the agent's signed
     // /internal/set-state on the member's open turn ("pause me until next Friday").
     const phone = newPhone();
@@ -169,11 +406,10 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
     // The value is read from the member record the Network uses, not a copy.
     const [row] = await sql`select participation_window from network.members where app_id = 'friends' and id = ${open.memberId}`;
     expect(row.participation_window.until).toBe(until);
-    // Every site's Settings page has the slot that shows "Paused until <date>" and the resume button.
+    // Removed account routes must not expose a standalone sign-in form.
     for (const app of APP_IDS) {
-      const html = await (await st.site(app, "/settings")).text();
-      expect(html).toContain('data-slot="pauseText"');
-      expect(html).toContain('data-action="resume"');
+      const page = await st.site(app, "/settings");
+      expect(page.status).toBe(404);
     }
 
     const resume = await st.site("friends", "/api/me/resume", { browser: b, json: {} });
@@ -188,6 +424,94 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
   }, T);
 
   describe("MCP through the site router", () => {
+    test("multi-market radius survives profile intake, correction and geo matching without changing home or presence", async () => {
+      const pilot = await startStack();
+      const db = new SQL({ url: pilot.url, max: 2 });
+      try {
+        const phone = newPhone(), browser = new Browser();
+        expect((await webJoin(pilot, "slop", phone, { age: 32, browser })).res.status).toBe(200);
+        const member = (await db`select id from network.members m join platform.phone_identities p on p.person_id=m.person_id where p.e164=${phone} and m.app_id='slop'`)[0]!;
+        const c = await connectMcp(pilot, "slop", phone, { browser });
+        const submit = async (about: string) => toolData(await rpc(pilot, "slop", "/mcp", "tools/call", { name: "submit_profile", arguments: { about } }, c.token!.access_token));
+        expect((await submit("Hello, I am ready to finish my profile.")).submitted).toBe(true);
+        expect((await submit("I'm Theo, a man, 32, home in NYC, zip 11211. Looking for women 28-38. I date in SF and NYC within 100 miles. I like climbing.")).submitted).toBe(true);
+        expect((await submit("Change only my distance to 50 miles, not 100 miles.")).submitted).toBe(true);
+        const snapshot = await pilot.svc.runtimeFor("slop")!.unitOfWork(n => n.packInput(pilot.clock.now()));
+        const saved = (await db`select state from network.network_state where id='slop:nyc'`)[0].state;
+        const stored = saved.members.find((m: any) => m.id === member.id);
+        expect(stored.onboarding.distance.value).toEqual({mode:"multi", markets:["nyc","sf"], miles:50});
+        expect(stored.appTags.filter((t: any) => /^slop:(scope|max_miles):/.test(t.tag)).map((t: any) => t.tag).sort()).toEqual(["slop:max_miles:50", "slop:scope:multi:nyc,sf"]);
+        const profile = slopProfiles(snapshot).get(member.id as any)!;
+        expect(snapshot.members.some(m => m.id === member.id)).toBe(true);
+        expect(profile.scope).toEqual({ mode: "multi", markets: ["nyc", "sf"] });
+        expect(profile.maxMiles).toBe(50);
+        expect(profile.homeMarket).toBe("nyc");
+        expect((await db`select home_city from network.members where id=${member.id}`)[0].home_city).toBe("nyc");
+        const facets = snapshot.facets.filter(f => f.memberId === member.id && f.tags.some(t => /^slop:(scope|max_miles):/.test(t)));
+        expect(facets.flatMap(f => f.tags).sort()).toEqual(["slop:max_miles:50", "slop:scope:multi:nyc,sf"]);
+        expect(facets.every(f => f.scope === "agent_private")).toBe(true);
+        const parsed = extractSlopProfile(["I'm a man, 32, zip 94103. I date in SF and NYC within 100 miles."]);
+        const corrected = applyCorrection(parsed, "50 miles, not 100 miles");
+        expect(corrected.distance?.value).toEqual({ mode: "multi", markets: ["nyc", "sf"], miles: 50 });
+        expect(readBack(corrected)).toContain("50 mi");
+        expect(readBack(corrected)).toContain("SF");
+        expect(readBack(corrected)).toContain("NYC");
+        expect(slopOnboardTags(extractSlopProfile(["I date in SF and NYC"])).tags.map(t => t.tag)).toContain("slop:max_miles:25");
+        const reading = { distance: { value: { mode: "multi", markets: ["sf", "nyc"], miles: 50 }, quote: "SF and NYC within 50 miles" } };
+        expect(validateSlopReading(reading, "SF and NYC within 50 miles").distance?.value).toEqual(reading.distance.value);
+        const pack = makeSlopPack({ verification: { required: false } });
+        const origin = profile.cell!;
+        const peer: SlopProfile = { ...profile, scope: { mode: "multi" as const, markets: ["nyc"] }, maxMiles: 50, cell: { id: "synthetic-35mi", lat: origin.lat + 0.5, lon: origin.lon } };
+        expect(cellMiles(origin, peer.cell)).toBeGreaterThan(25);
+        expect(cellMiles(origin, peer.cell)).toBeLessThan(50 - pack.options.radiusMargin);
+        expect(mutualMarkets(profile, peer, pack.options, ["sf", "nyc"]).map(m => m.market)).toEqual(["nyc"]);
+        expect(mutualMarkets({ ...profile, maxMiles: 25 }, peer, pack.options, ["nyc"])).toEqual([]);
+        expect(mutualMarkets(peer, { ...profile, maxMiles: 25 }, pack.options, ["nyc"])).toEqual([]);
+        expect(mutualMarkets(profile, { ...peer, cell: { id: "synthetic-70mi", lat: origin.lat + 1, lon: origin.lon } }, pack.options, ["nyc"])).toEqual([]);
+        const world = new World(snapshot, SLOP_ENGINE_DEFAULTS, () => [1, 0], pack);
+        expect(world.pack.geo.location(world, member.id as any, snapshot.now, snapshot.now + DAY).has("sf")).toBe(false);
+        expect(appWiring("slop").engine?.cities).toEqual(["nyc"]);
+        expect((await submit("Change only my distance to 25 miles.")).submitted).toBe(true);
+        const narrowed = await pilot.svc.runtimeFor("slop")!.unitOfWork(n => n.packInput(pilot.clock.now()));
+        expect(slopProfiles(narrowed).get(member.id as any)?.scope).toEqual({mode:"multi",markets:["nyc","sf"]});
+        expect(slopProfiles(narrowed).get(member.id as any)?.maxMiles).toBe(25);
+        expect(narrowed.facets.some(f => f.memberId === member.id && f.tags.includes("slop:max_miles:50"))).toBe(false);
+        expect((await pilot.svc.runtimeFor("peon")!.unitOfWork(n => n.packInput(pilot.clock.now()))).facets.some(f => f.memberId === member.id)).toBe(false);
+        // A separate synthetic SF registry admits storage, but the real NYC-only engine still excludes SF home.
+        const sf = await startStack({ slopCity: "sf" });
+        const sfDb = new SQL({ url: sf.url, max: 1 });
+        try {
+          const sfPhone = newPhone(), sfBrowser = new Browser();
+          expect((await webJoin(sf, "slop", sfPhone, { age: 32, browser: sfBrowser })).res.status).toBe(200);
+          const sfClient = await connectMcp(sf, "slop", sfPhone, { browser: sfBrowser });
+          for (const about of ["Hello, I am ready to finish my profile.", "I'm a man, 32, home in the Bay Area, zip 94505. Looking for women 28-38. I date in SF and NYC within 50 miles."]) {
+            expect(toolData(await rpc(sf, "slop", "/mcp", "tools/call", { name: "submit_profile", arguments: { about } }, sfClient.token!.access_token)).submitted).toBe(true);
+          }
+          const sfSaved = (await sfDb`select state from network.network_state where id='slop:sf'`)[0].state.members[0];
+          expect(sfSaved.onboarding.location.value.zip).toBe("94505");
+          expect(sfSaved.onboarding.location.value.known).toBe(true);
+          expect(zipForArea("Bay Area")).toBeUndefined();
+          expect(sfSaved.onboarding.distance.value).toEqual({mode:"multi",markets:["nyc","sf"],miles:50});
+          expect(sfSaved.onboarding.gender.value).toBe("man");
+          expect(sfSaved.onboarding.seeks.value).toEqual(["woman"]);
+          expect(sfSaved.onboarding.ageRange.value).toEqual([28,38]);
+          const locationTags = sfSaved.appTags.filter((t:any) => /^(slop:(zip|max_miles|scope):|romance:)/.test(t.tag));
+          expect(locationTags.some((t:any) => t.tag === "slop:zip:94505")).toBe(true);
+          expect(locationTags.some((t:any) => t.tag === "slop:max_miles:50")).toBe(true);
+          expect(locationTags.every((t:any) => t.scope === "agent_private")).toBe(true);
+          const cell = cellOfZip(sfSaved.onboarding.location.value.zip);
+          expect(cell).toBeDefined();
+          expect(cell!.lat).toBeCloseTo(37.875, 6);
+          expect(cell!.lon).toBeCloseTo(-121.595, 6);
+          expect(cell!.lat).not.toBe(37.8713);
+          expect(cell!.lon).not.toBe(-121.5970);
+          expect((await sfDb`select home_city from network.members where app_id='slop'`)[0].home_city).toBe("sf");
+          expect((await sf.svc.runtimeFor("slop")!.unitOfWork(n => n.packInput(sf.clock.now()))).members).toEqual([]);
+        } finally { await sfDb.close(); await sf.close(); }
+
+      } finally { await db.close(); await pilot.close(); }
+    }, T);
+
     test("public signup instructions match the invite-only Network page and keep open apps usable", async () => {
       const page = await (await st.site("ntwrk", "/join?via=agent")).text();
       expect(page).toContain("You need an invite.");
@@ -196,7 +520,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
       const skill = await (await st.site("ntwrk", "/SKILL.md")).text();
       expect(skill).toContain("The website is invite-only. There is no public sign-up form");
       expect(skill).toContain("Reply to your own invitation text to accept");
-      expect(skill).toContain("https://ntwrk.party/settings");
+      expect(skill).not.toContain("https://ntwrk.party/settings");
       expect(skill).not.toContain("On that page they type");
       expect(skill).toContain("A first text does not require a website invitation");
       expect(skill).toContain("sms:");
@@ -205,13 +529,13 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
       const info = toolData(await rpc(st, "ntwrk", "/mcp/openai", "tools/call", { name: "app_info", arguments: { app: "ntwrk" } }));
       expect(info.join.mode).toBe("invite");
       expect(info.join.how).toContain("Reply to that invitation text to accept");
-      expect(info.join.how).toContain("https://ntwrk.party/settings");
+      expect(info.join.how).toContain("connector authorization");
       expect(info.join.how).not.toContain("The agent asks what they are looking for");
       const signup = (app: AppId) => rpc(st, "ntwrk", "/mcp/openai", "tools/call", { name: "start_signup", arguments: { app } });
       const invite = toolData(await signup("ntwrk"));
       expect(invite).toMatchObject({ app: "ntwrk", join_mode: "invite", url: "https://ntwrk.party/join?via=agent" });
       expect(invite.instructions_for_person).toContain("Reply to that invitation text to accept");
-      expect(invite.instructions_for_person).toContain("https://ntwrk.party/settings");
+      expect(invite.instructions_for_person).toContain("connector authorization");
       expect(invite.instructions_for_person).not.toMatch(/enter your own phone|code arrives|type it on that page/i);
       for (const app of ["peon", "friends"] as const) {
         const info = toolData(await rpc(st, "ntwrk", "/mcp/openai", "tools/call", { name: "app_info", arguments: { app } }));
@@ -725,7 +1049,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
       expect((await webJoin(st, "slop", adult, { age: 29, browser: ab })).res.status).toBe(200);
       const refused = await upload(tb);
       expect([refused.status, ((await refused.json()) as { error: string }).error]).toEqual([403, "adults_only"]);
-      // The settings page hides the photo section (consent text and upload control) unless `eligible` is true.
+      // Photo API eligibility remains restricted to adult members.
       const listOf = async (b: Browser) => (await st.site("slop", "/api/photos", { browser: b })).json() as Promise<{ eligible: boolean; photos: unknown[] }>;
       expect(await listOf(tb)).toMatchObject({ eligible: false, photos: [] });
       expect((await listOf(ab)).eligible).toBe(true);

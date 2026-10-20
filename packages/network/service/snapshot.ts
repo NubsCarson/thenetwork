@@ -32,7 +32,7 @@ export function facetOf(r: any): Facet {
   return {
     id: r.id, memberId: r.member_id, kind: r.kind, value: r.value, tags: r.tags ?? [], scope: r.privacy_scope, provenance: r.provenance,
     confidence: r.confidence, validFrom: ms(r.valid_from), validTo: ms(r.valid_to), ...(r.source ? { source: r.source } : {}),
-    ...(r.sensitive ? { sensitive: r.sensitive } : {}), confirmedByMember: r.status === "confirmed",
+    ...(r.sensitive ? { sensitive: r.sensitive } : {}), ...(r.provenance === "inferred" ? { inferred: true } : {}), confirmedByMember: r.status === "confirmed",
   };
 }
 
@@ -47,8 +47,8 @@ export function presenceOf(r: any): Presence {
   return { memberId: r.member_id, city: r.city, type: r.type, areas: r.areas ?? [], ...(r.from_at ? { from: ms(r.from_at) } : {}), ...(r.to_at ? { to: ms(r.to_at) } : {}) };
 }
 
-/** Which network a snapshot is for. Every query names the app; the city keeps members who live there or have presence there. */
-export interface SnapshotScope { app: string; city?: string }
+/** App isolation always applies. Runtime conversation ownership names homeCities; other readers may use physical city/presence scope. */
+export interface SnapshotScope { app: string; city?: string; homeCities?: readonly string[] }
 
 /**
  * The engine's and the Network's input at `now`, for one app (platform plan 2.4: nothing crosses apps).
@@ -67,7 +67,9 @@ export interface SnapshotScope { app: string; city?: string }
 export async function loadSnapshot(sql: SQL, now: number, scope: SnapshotScope = { app: "ntwrk" }): Promise<WorldSnapshot> {
   const app = scope.app;
   const [members, facets, intents, presence, edges, recent, parts, personBlocks] = await Promise.all([
-    sql`select * from network.members where app_id = ${app} and account_status not in ('invited', 'removed') order by id`,
+    sql`select m.*, a.age as matching_age from network.members m
+      left join platform.matching_ages a on a.app_id = m.app_id and a.member_id = m.id
+      where m.app_id = ${app} and m.account_status not in ('invited', 'removed') order by m.id`,
     sql`select * from network.facets where app_id = ${app} and status <> 'rejected' order by member_id, id`,
     sql`select * from network.intents where app_id = ${app} order by member_id, id`,
     sql`select * from network.presence where app_id = ${app} order by member_id, city, type`,
@@ -78,9 +80,9 @@ export async function loadSnapshot(sql: SQL, now: number, scope: SnapshotScope =
       join network.members f on f.person_id = pb.from_person and f.app_id = ${app}
       join network.members t on t.person_id = pb.to_person and t.app_id = ${app} order by f.id, t.id`,
   ]);
-  // The city: members who live there, or have presence there.
+  // Runtime conversation ownership takes precedence; it never creates or changes physical presence.
   const joined = new Set((members as any[]).map(r => r.id as string));
-  const inCity = (scope.city === undefined ? undefined
+  const inCity = (scope.homeCities ? new Set((members as any[]).filter(r => scope.homeCities!.includes(r.home_city)).map(r => r.id as string)) : scope.city === undefined ? undefined
     : new Set([...(members as any[]).filter(r => r.home_city === scope.city).map(r => r.id as string), ...(presence as any[]).filter(r => r.city === scope.city).map(r => r.member_id as string)]));
   const keep = (id: string) => joined.has(id) && (!inCity || inCity.has(id));
   const partsBy = new Map<string, any[]>();
@@ -93,7 +95,7 @@ export async function loadSnapshot(sql: SQL, now: number, scope: SnapshotScope =
       id: r.id, name: r.name, homeCity: r.home_city, state: effectiveParticipation(r,now).state, prefs: r.prefs, accountStatus: r.account_status,
       // A missing age stays missing (undefined), never 0: 0 is a valid age under 13, and the Network
       // would decline the member and delete their data. Missing means unknown: treated as a minor and asked (network.md 6.3).
-      ...(r.invited_by ? { invitedBy: r.invited_by } : {}), joinedAt: ms(r.joined_at) ?? 0, age: r.age ?? (undefined as unknown as number), unansweredProactive: r.unanswered_proactive,
+      ...(r.invited_by ? { invitedBy: r.invited_by } : {}), joinedAt: ms(r.joined_at) ?? 0, age: r.matching_age ?? (undefined as unknown as number), unansweredProactive: r.unanswered_proactive,
     })),
     facets: (facets as any[]).filter(r => keep(r.member_id)).map(facetOf), intents: (intents as any[]).filter(r => keep(r.member_id)).map(intentOf),
     presence: (presence as any[]).filter(r => keep(r.member_id)).map(presenceOf),
