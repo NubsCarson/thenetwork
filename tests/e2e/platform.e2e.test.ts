@@ -9,7 +9,7 @@ import { lastEvents, resolveConsent } from "../../packages/platform/src/consent.
 import { APP_IDS, type AppId } from "../../packages/platform/src/apps.ts";
 import { proxySignature } from "../../packages/platform/src/proxy.ts";
 import { PHOTO_CONSENT } from "../../packages/platform/src/photos.ts";
-import { pkceS256 } from "../../packages/mcp/src/util.ts";
+import { pkceS256, sha256hex } from "../../packages/mcp/src/util.ts";
 import { createServiceMcp } from "../../packages/network/service/serve.ts";
 import { svcSign } from "../../packages/core/src/svc/svc-auth.ts";
 import { SET_STATE_PATH, TURN_PATH, type TurnRequest } from "../../packages/core/src/svc/contract.ts";
@@ -190,7 +190,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
   describe("MCP through the site router", () => {
     test("public signup instructions match the invite-only Network page and keep open apps usable", async () => {
       const page = await (await st.site("ntwrk", "/join?via=agent")).text();
-      expect(page).toContain("The Network is invite-only. There is no sign-up form.");
+      expect(page).toContain("You need an invite.");
       const app = await (await st.site("ntwrk", "/api/app")).json() as { joinMode: string };
       expect(app.joinMode).toBe("invite");
       const skill = await (await st.site("ntwrk", "/SKILL.md")).text();
@@ -332,23 +332,14 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
         const wrongResource = query(); wrongResource.set("resource", `${pilot.sites.slop.origin}/mcp/openai`);
         expect((await pilot.site("slop", `/oauth/authorize?${wrongResource}`, { browser })).status).toBe(400);
         expect((await pilot.site("slop", `/oauth/authorize?${query(cimd.id, cimd.redirectUris[0]!)}`, { browser })).status).toBe(403);
-        const pending = async () => {
-          const html = await (await pilot.site("slop", `/oauth/authorize?${query()}`, { browser })).text();
-          const rid = /name="rid" value="([^"]+)"/.exec(html)![1]!;
-          const captured = new Browser();
-          for (const [key, value] of browser.jar) captured.jar.set(key, value);
-          return { rid, browser: captured };
-        };
-        const consent = await pending();
-        const codeRequest = await pending();
-        const approved = await pilot.site("slop", "/oauth/authorize/consent", { browser: codeRequest.browser, form: { rid: codeRequest.rid, decision: "approve" } });
+        const approved = await pilot.site("slop", `/oauth/authorize?${query()}`, { browser });
         const code = new URL(approved.headers.get("location")!).searchParams.get("code")!;
         const exchange = () => pilot.site("slop", "/oauth/token", { form: { grant_type: "authorization_code", code, client_id: c.client.client_id, redirect_uri: redirect, code_verifier: VERIFIER } });
         const refresh = () => pilot.site("slop", "/oauth/token", { form: { grant_type: "refresh_token", refresh_token: c.token!.refresh_token, client_id: c.client.client_id } });
         for (const allowed of [undefined, ["another-person"]]) {
           pilot.setCustomChatGptSlopPersonIds(allowed);
           expect((await status()).res.status).toBe(allowed ? 401 : 404);
-          expect((await pilot.site("slop", "/oauth/authorize/consent", { browser: consent.browser, form: { rid: consent.rid, decision: "approve" } })).status).toBe(403);
+          expect((await pilot.site("slop", `/oauth/authorize?${query()}`, { browser })).status).toBe(403);
           expect((await exchange()).status).toBe(allowed ? 400 : 401);
           expect((await refresh()).status).toBe(allowed ? 400 : 401);
         }
@@ -362,7 +353,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
       } finally { await db.close(); await pilot.close(); }
     }, T);
 
-    test("custom ChatGPT Slop rejects ineligible people and account switches before consent", async () => {
+    test("custom ChatGPT Slop rejects ineligible people and binds access to the verified account", async () => {
       const pilot = await startStack();
       const db = new SQL({ url: pilot.url, max: 2 });
       try {
@@ -390,10 +381,14 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
         const first = owners[0]!;
         const c = await connectMcp(pilot, "slop", first.phone, { browser: first.browser, redirect });
         const q = new URLSearchParams({ response_type: "code", client_id: c.client.client_id, redirect_uri: redirect, code_challenge: pkceS256(VERIFIER), code_challenge_method: "S256" });
-        const html = await (await pilot.site("slop", `/oauth/authorize?${q}`, { browser: first.browser })).text();
-        const rid = /name="rid" value="([^"]+)"/.exec(html)![1]!;
+        const authorized = await pilot.site("slop", `/oauth/authorize?${q}`, { browser: first.browser });
+        const code = new URL(authorized.headers.get("location")!).searchParams.get("code")!;
         await signIn(pilot, "slop", secondPhone, first.browser);
-        expect((await pilot.site("slop", "/oauth/authorize/consent", { browser: first.browser, form: { rid, decision: "approve" } })).status).toBe(403);
+        const tokenResponse = await pilot.site("slop", "/oauth/token", { form: { grant_type: "authorization_code", code, client_id: c.client.client_id, redirect_uri: redirect, code_verifier: VERIFIER } });
+        expect(tokenResponse.status).toBe(200);
+        const token = (await tokenResponse.json() as {access_token: string}).access_token;
+        const savedToken = await pilot.mcp.store.getToken(sha256hex(token));
+        expect((await pilot.mcp.store.getGrant(savedToken!.grantId))!.personId).toBe(first.person);
       } finally { await db.close(); await pilot.close(); }
     }, T);
 
@@ -409,9 +404,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
           const c = await connectMcp(pilot, "slop", phone, { browser, redirect: "https://chatgpt.com/connector_platform_oauth_redirect" });
           expect(c.token?.access_token, kind).toBeString();
           const pendingQuery = new URLSearchParams({ response_type: "code", client_id: c.client.client_id, redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect", code_challenge: pkceS256(VERIFIER), code_challenge_method: "S256" });
-          const pendingHtml = await (await pilot.site("slop", `/oauth/authorize?${pendingQuery}`, { browser })).text();
-          const pendingId = /name="rid" value="([^"]+)"/.exec(pendingHtml)![1]!;
-          const pending = await pilot.site("slop", "/oauth/authorize/consent", { browser, form: { rid: pendingId, decision: "approve" } });
+          const pending = await pilot.site("slop", `/oauth/authorize?${pendingQuery}`, { browser });
           const code = new URL(pending.headers.get("location")!).searchParams.get("code")!;
           if (kind === "age") await pilot.svc.people.noteAgeFloor(pilot.svc.publicApi.accounts.phoneHash(phone), 17, pilot.clock.now());
           if (kind === "hold") await pilot.svc.people.setPhoneHold(phone, "recycled_number", pilot.clock.now());
@@ -475,15 +468,14 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
         expect((await pilot.site("slop", `/oauth/authorize?${cimdQuery}`, { browser })).status).toBe(403);
         expect((await pilot.site("slop", "/oauth/token", { form: { grant_type: "refresh_token", refresh_token: connection.token!.refresh_token, client_id: cimdId } })).status).toBe(401);
         const pending = await pilot.site("slop", `/oauth/authorize?${authorizeQuery}`, { browser });
-        const rid = /name="rid" value="([^"]+)"/.exec(await pending.text())?.[1];
-        expect(rid).toBeString();
+        const pendingCode = new URL(pending.headers.get("location")!).searchParams.get("code")!;
+        expect(pendingCode).toBeString();
         const refresh = () => pilot.site("slop", "/oauth/token", { form: { grant_type: "refresh_token", refresh_token: connection.token!.refresh_token, client_id: connection.client.client_id } });
         await pilot.setPrivateOpenAiApps([]);
         expect((await rpc(pilot, "slop", "/mcp", "tools/call", { name: "check_status", arguments: {} }, connection.token!.access_token)).res.status).toBe(404);
         expect((await pilot.site("slop", `/oauth/authorize?${authorizeQuery}`, { browser })).status).toBe(403);
-        expect((await pilot.site("slop", "/oauth/authorize/consent", { browser, form: { rid: rid!, decision: "approve" } })).status).toBe(403);
         expect((await refresh()).status).toBe(401);
-        const codeExchange = await pilot.site("slop", "/oauth/token", { form: { grant_type: "authorization_code", code: new URL(connection.location!).searchParams.get("code")!, redirect_uri: redirect, client_id: connection.client.client_id, code_verifier: VERIFIER } });
+        const codeExchange = await pilot.site("slop", "/oauth/token", { form: { grant_type: "authorization_code", code: pendingCode, redirect_uri: redirect, client_id: connection.client.client_id, code_verifier: VERIFIER } });
         expect(codeExchange.status).toBe(401);
         await pilot.setPrivateOpenAiApps(["slop"]);
         expect((await rpc(pilot, "slop", "/mcp", "tools/call", { name: "check_status", arguments: {} }, connection.token!.access_token)).res.status).toBe(200);

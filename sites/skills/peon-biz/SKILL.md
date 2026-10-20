@@ -8,7 +8,7 @@ metadata:
   site: https://peon.biz
   mcp: "{{MCP_URL}}"
   operator: Eliza Research Corporation
-  version: "1.1.1"
+  version: "1.1.2"
 ---
 
 # peon.biz
@@ -42,7 +42,7 @@ peon.biz's text line is {{TEXT_LINE}}. Its MCP server is at {{MCP_URL}}.
 The steps differ by device. If you cannot tell which the person is on, ask once.
 
 - **On a phone.** A phone app usually cannot add a connector, so do not send the person to connector
-  settings. Do steps 1 and 2. Then give them one link that opens their messages app with the approved
+  settings. Do step 1, including their stated age. Then give them one link that opens their messages app with the approved
   profile already written: `sms:{{TEXT_LINE}}?&body=` followed by the profile, URL-encoded (spaces as
   %20). The person presses send themselves. That text is their profile; step 3 is not needed.
 - **On a computer.** Do steps 1, 2 and 3. If the client cannot add the connector, show the approved
@@ -56,15 +56,15 @@ The person signs up through you, in this conversation:
 
 1. Build the profile: whether they are looking for work or hiring, the kind of role, the neighborhood or remote, when they can start, and the skills that matter (no salary history, no Social Security number, no bank details). Start from what you already know about the person: draft the profile from your memory of them and show it. Ask only for what is missing, one or two questions at a time. Never ask for a phone number, a code, an
    address or anything about another person. Read the profile back and change it until they agree.
-2. Give them one link to confirm their own phone: https://peon.biz/join?via=agent. On that page they type
-   their own number, the code we text them, their first name and age, and agree to the texts. You
+2. Give them one link to confirm their own phone (prefill it as described in "A shorter browser handoff"): https://peon.biz/join?via=agent. On that page they type
+   their own number and code, review their first name and age, and agree to the texts. You
    never see the number or the code.
 3. Ask the person to return to this same agent conversation when they finish on the site.
    If this app's MCP tools are not available, they must add {{MCP_URL}} in their client's connector settings.
    In ChatGPT, add https://peon.biz/mcp/openai instead; /mcp does not authorize ChatGPT clients.
    Reading this file does not install a connector or authorize access. If the client cannot add it,
    use the text link in "Phone or computer"; do not claim success and never send the profile yourself.
-   The person signs in and allows access on our page. A code is skipped only when that browser
+   The person confirms their phone on our page. Access connects automatically. A code is skipped only when that browser
    has a current session for this app. Call check_status first and confirm its app is peon.
    If the connection names another app, stop and connect to this app; never submit across apps.
    Call submit_profile once with their approved profile, then check_status on the same connection.
@@ -109,6 +109,20 @@ to share a base profile. Nobody can learn whether a phone number uses peon.biz.
 
 ## Support
 
-- Support: https://peon.biz/support (email help@ntwrk.party)
+- Email: help@ntwrk.party
 - Privacy: https://peon.biz/privacy
 - Terms and text messaging terms: https://peon.biz/terms
+
+## A shorter browser handoff
+
+Ask for the person's first name and stated age in the conversation, using confirmed details you already know.
+Ask only for missing details. Never infer age. Read back the profile and get approval.
+For web verification, prefill only these approved details in the URL fragment:
+`https://peon.biz/join?via=agent#firstName=Alex&age=28`.
+Replace the example values and URL-encode each value. Never put them in the query string.
+Never include a phone, code, consent, preferences or biography in that link.
+The person reviews these fields and checks the consent box themselves.
+Interests, location and app-specific preferences stay in this conversation until the approved profile submission.
+On mobile, the person can send the approved profile by text; do not also send them through web verification.
+After web signup, return here and follow the connector steps above. Signup alone does not mean the profile was submitted.
+Explain safety and account controls when relevant, rather than repeating them before each step.

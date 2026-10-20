@@ -17,6 +17,7 @@
     "observatory": "bun run packages/observatory/src/server.ts",
     "observatory:db": "bun run packages/observatory/db/dev-pg.ts up && bun run packages/observatory/db/seed.ts --from-sim --days 14",
     "db:migrate": "bun run packages/observatory/db/migrate.ts",
+    "design:members": "bun run --conditions eliza-source design/member-flows/server.ts",
     "sites:dev": "bun run scripts/sites-dev.ts",
     "platform:dev": "bun run scripts/platform-dev.ts",
     "start:backend": "bun run deploy/backend/server.ts",

@@ -5,6 +5,7 @@
 //   data-min-age="13"           the page's default when /api/app cannot be read
 // Steps: loading, invite, phone, code, profile, member, blocked, done.
 import { api, type ApiError, type Me } from "./api.ts";
+import { prefillJoin, clearJoinDraft } from "./prefill.ts";
 import { mountAuth } from "./auth.ts";
 import { $, busy, fill, formatDate, message, plainText, ready, setError, showStep, when } from "./ui.ts";
 
@@ -40,6 +41,7 @@ function route(root: HTMLElement, me: Me, inviteOnly: boolean): void {
 }
 
 export async function mountJoin(root: HTMLElement): Promise<void> {
+  prefillJoin(root);
   showStep(root, "loading");
   const [app, me] = await Promise.all([api.app(), api.me()]);
   const inviteOnly = app.ok ? app.data.joinMode === "invite" : root.dataset.joinMode === "invite";
@@ -105,9 +107,11 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
     };
     const res = await busy(form, () => api.join(body));
     if (res.ok) {
+      clearJoinDraft();
       fill(root, { firstName: res.data.membership?.firstName ?? firstName });
       showStep(root, "done");
     } else if (res.error === "under_age" || res.error === "invite_only" || res.error === "review") {
+      clearJoinDraft();
       block(root, res.error);
     } else if (res.error === "unauthorized") {
       start(root);

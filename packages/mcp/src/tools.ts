@@ -175,7 +175,7 @@ function publicInfo(a: McpApp, surface: Surface) {
       "Nothing crosses from one app to another unless the person shares it.",
       "The person signs themselves up and types their own code on the site. An assistant never handles the code.",
     ],
-    links: { privacy: a.links.privacy, terms: a.links.terms, sms_terms: a.links.smsTerms, safety: a.links.safety, settings: a.links.settings, support: a.links.support },
+    links: { privacy: a.links.privacy, terms: a.links.terms, sms_terms: a.links.smsTerms, settings: a.links.settings, support: a.links.support },
   };
 }
 

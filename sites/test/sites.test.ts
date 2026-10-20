@@ -44,9 +44,9 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe.each(SITES)("$domain", (s) => {
   test("every required page is built", () => {
-    const need = ["index.html", "join.html", "settings.html", "privacy.html", "terms.html", "guidelines.html", "support.html", "404.html"];
+    const need = ["index.html", "join.html", "settings.html", "privacy.html", "terms.html", "404.html"];
     expect(htmlFiles(s)).not.toContain("sms-terms.html");
-    if (s.app === "slop") need.push("safety.html");
+
     expect(htmlFiles(s)).toEqual(expect.arrayContaining(need));
   });
 
@@ -55,7 +55,7 @@ describe.each(SITES)("$domain", (s) => {
       const html = read(s, f);
       expect(html.match(/<title>([^<]+)<\/title>/)?.[1]?.trim().length ?? 0, f).toBeGreaterThan(3);
       // The landing page links privacy and terms only.
-      for (const href of f === "index.html" ? ["/privacy", "/terms"] : ["/privacy", "/terms", "/guidelines", "/settings", "/support"]) {
+      for (const href of ["/privacy", "/terms"]) {
         expect(html.includes(`href="${href}"`), `${f} links ${href}`).toBe(true);
       }
     }
@@ -89,8 +89,8 @@ describe.each(SITES)("$domain", (s) => {
       }
     }
     // Plain words for minors on the join page: they can join, and they are never matched.
-    expect(text(read(s, "join.html"))).toMatch(/13 or older/);
-    expect(text(read(s, "join.html"))).toMatch(/18 and older/);
+    expect(text(read(s, "join.html"))).toMatch(/13(?: or older|\s*\+)/);
+    expect(text(read(s, "join.html"))).toMatch(/18(?: and older|\s*\+)/);
   });
 
   test("STOP stops every app; 'leave <app>' stops one (PRD 40.3). No page says STOP ALL", () => {
@@ -227,8 +227,8 @@ test("staging builds keep the served entry, skills and signed router on configur
     const base = `http://127.0.0.1:${server.port}`;
     const skill = await (await fetch(`${base}/SKILL.md`)).text();
     expect(skill).toContain(`MCP endpoint is ${origins.slop}/mcp`);
-    for (const path of ["join?via=agent", "settings", "privacy", "terms", "support"]) expect(skill).toContain(`${origins.slop}/${path}`);
-    expect(skill).toContain("email help@ntwrk.party");
+    for (const path of ["join?via=agent", "settings", "privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
+    expect(skill).toContain("Email: help@ntwrk.party");
     expect(skill).not.toContain("https://slop.date");
     const index = await (await fetch(`${base}/.well-known/agent-skills/index.json`)).json() as { skills: { url: string; digest: string }[] };
     expect(await (await fetch(base + index.skills[0]!.url)).text()).toBe(skill);
@@ -298,12 +298,14 @@ test("the page script tells a phone from a desktop (iPadOS reports itself as a M
 test("slop.date keeps its safety information off the landing page, and photos are for adults only", () => {
   const slop = SITES.find((s) => s.app === "slop")!;
   const notice = "slop.date does not run criminal background checks";
-  expect(text(read(slop, "join.html"))).toContain(notice);
+  expect(read(slop, "SKILL.md")).not.toContain("https://slop.date/safety");
+  expect(read(slop, "SKILL.md")).toContain("does not run criminal background checks");
   expect(text(read(slop, "index.html"))).not.toContain(notice);
-  expect(text(read(slop, "safety.html"))).toContain("slop.date does not conduct criminal background checks");
-  expect(text(read(slop, "safety.html"))).toContain("You do not have to accept it to join.");
+  for (const site of SITES) {
+    for (const page of ["safety.html", "guidelines.html", "support.html"]) expect(walk(out(site))).not.toContain(page);
+  }
   // Members aged 13 to 17 can join slop.date but get no matching and no photos.
-  for (const f of ["join.html", "privacy.html"]) {
+  for (const f of ["privacy.html"]) {
     const t = text(read(slop, f));
     expect(t, f).toMatch(/13 to 17|under 18/);
     expect(t, f).toMatch(/never asks? (them|you) for photos/);
@@ -313,7 +315,7 @@ test("slop.date keeps its safety information off the landing page, and photos ar
 
 test("peon.biz says a person reviews every introduction; no compliance gate blocks joining", () => {
   const peon = SITES.find((s) => s.app === "peon")!;
-  for (const f of ["join.html"]) {
+  for (const f of ["SKILL.md"]) {
     const t = text(read(peon, f));
     expect(t, f).toMatch(/reviews every introduction/i);
     expect(t, f).not.toContain("bias audit");
@@ -459,12 +461,12 @@ describe("dev server", () => {
   });
 
   test("serves pages by clean path and refuses paths outside the build", async () => {
-    const page = await fetch(`http://127.0.0.1:${up.port}/safety`);
+    const page = await fetch(`http://127.0.0.1:${up.port}/privacy`);
     expect(page.status).toBe(200);
     expect(page.headers.get("x-frame-options")).toBe("DENY");
     expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect((await fetch(`http://127.0.0.1:${up.port}/_headers`)).status).toBe(404);
-    expect((await fetch(`http://127.0.0.1:${up.port}/no-such-page`)).status).toBe(404);
+    for (const path of ["no-such-page", "safety", "guidelines", "support"]) expect((await fetch(`http://127.0.0.1:${up.port}/${path}`)).status).toBe(404);
     expect((await fetch(`http://127.0.0.1:${up.port}/..%2f..%2fsites.ts`)).status).toBe(404);
   });
 });

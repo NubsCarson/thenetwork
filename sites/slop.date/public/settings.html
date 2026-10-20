@@ -3,15 +3,14 @@
 <title>Settings · slop.date</title><meta name="description" content="See your membership, export your data, stop messages, or delete your data.">
 <meta name="theme-color" content="#20231a">
 <meta name="turnstile-sitekey" content="{{TURNSTILE_SITE_KEY}}">
-<link rel="stylesheet" href="./styles.css"><script type="module" src="../../shared/settings.ts"></script><script type="module" src="../../shared/photos.ts"></script></head>
-<body>
+<link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="../../shared/member.css"><script type="module" src="../../shared/settings.ts"></script><script type="module" src="../../shared/photos.ts"></script></head>
+<body class="member-pages">
 <a class="skip" href="#main">Skip to content</a>
 <div class="wrap top">
-  <a class="mark" href="/">slop<span>.date</span></a>
-  <nav aria-label="Main"><a href="/safety">Safety</a><a href="/settings" aria-current="page">Settings</a><a class="cta" href="/join">Join</a></nav>
+  <a class="member-brand" href="/"><svg aria-hidden="true" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#141414"/><path fill="#dcf24a" d="M32 46C12 32 10 20 19 14c6-4 11 0 13 4 2-4 7-8 13-4 9 6 7 18-13 32Z"/><rect fill="#dcf24a" x="21" y="34" width="5" height="16" rx="2.5"/><rect fill="#dcf24a" x="38" y="34" width="5" height="12" rx="2.5"/><circle fill="#dcf24a" cx="23.5" cy="56" r="2.5"/></svg>slop.date</a>
+
 </div>
 <main id="main" class="narrow page">
-<h1>Settings</h1>
 <div class="flow" data-settings data-export-name="slop-date-my-data"
   data-msg-stopped="Messages from every app on this number are stopped. Text START to resume messages from the app you last talked with."
   data-gone-app="You left slop.date. We deleted your profile and messages for slop.date."
@@ -21,12 +20,12 @@
   <section data-step="loading" hidden><p aria-live="polite">Loading…</p></section>
 
   <section data-step="phone" hidden>
-    <h2>Log in</h2>
-    <p>Log in with your phone number to see and change your membership. We text you a code.</p>
+    <h2>Confirm your phone number</h2>
+
     <form data-form="phone" novalidate>
-      <div class="field"><label for="phone">Mobile number</label>
-        <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(212) 555-0123" required aria-describedby="phone-hint">
-        <p class="hint" id="phone-hint">US numbers only. Message and data rates may apply.</p></div>
+      <div class="field"><label class="sr-only" for="phone">Mobile number</label>
+        <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(212) 555-0123" required>
+        </div>
       <div class="human" data-turnstile></div>
       <p class="error" data-error role="alert" hidden></p>
       <button class="btn" type="submit" data-busy="Sending…">Text me a code</button>
@@ -35,24 +34,24 @@
 
   <section data-step="code" hidden>
     <h2>Enter the code</h2>
-    <p>We sent a code to <strong data-slot="phoneShown"></strong>. It can take a minute to arrive.</p>
+    <p>Sent to <strong data-slot="phoneShown"></strong>.</p>
     <form data-form="code" novalidate>
-      <div class="field"><label for="code">Code</label>
+      <div class="field"><label class="sr-only" for="code">Code</label>
         <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required data-focus></div>
       <p class="error" data-error role="alert" hidden></p>
       <div class="row"><button class="btn" type="submit" data-busy="Checking…">Log in</button>
-        <button class="linkish" type="button" data-action="resend">Send a new code</button>
-        <button class="linkish" type="button" data-action="change-number">Use a different number</button></div>
+        <button class="linkish" type="button" data-action="resend">Resend code</button>
+        <button class="linkish" type="button" data-action="change-number">Change number</button></div>
     </form>
   </section>
 
   <section data-step="account" hidden>
-    <h2>Your membership</h2>
+    <h2>Your account</h2>
+    <p><a href="/oauth/consents">Connected assistants</a></p>
     <dl class="facts">
       <dt>Phone</dt><dd data-slot="phoneMasked"></dd>
       <dt data-when="has-membership">Name</dt><dd data-when="has-membership" data-slot="firstName"></dd>
       <dt data-when="has-membership">Status</dt><dd data-when="has-membership" data-slot="state"></dd>
-      <dt data-when="has-membership">Joined</dt><dd data-when="has-membership" data-slot="joinedAt"></dd>
       <dt data-when="paused" hidden>Availability</dt><dd data-when="paused" data-slot="pauseText" hidden></dd>
       <dt data-when="has-quiet" hidden>Quiet hours</dt><dd data-when="has-quiet" data-slot="quietHours" hidden></dd>
     </dl>
@@ -62,21 +61,21 @@
       <h3>Your photos</h3>
       <p data-photo-consent-text></p>
       <div class="field"><label><input type="checkbox" data-photo-consent> I agree</label></div>
-      <div class="field"><label for="photo-file">Add a photo (JPEG, PNG or WebP, up to 8 MB)</label>
+      <div class="field"><label for="photo-file">Add a photo</label>
         <input id="photo-file" type="file" accept="image/jpeg,image/png,image/webp" data-photo-file></div>
       <p class="status" data-photo-status aria-live="polite"></p>
       <ul class="photo-list" data-photo-list></ul>
-      <p class="hint">No other member sees your photos. You can also text a photo to us; we ask for your OK first.</p>
+      <p class="hint">Your photos stay private.</p>
     </div>
     <div class="actions" data-when="has-membership">
-      <div><h3>Export my data</h3><p>Download a file with what slop.date holds about you. It holds only this site's data.</p><button class="btn quiet" type="button" data-action="export">Export my data</button></div>
+      <div><p>Your data from this site.</p><button class="btn quiet" type="button" data-action="export">Export my data</button></div>
       <div data-when="paused" hidden><h3>Resume</h3><p>You asked for a break, so slop.date suggests no one until it ends. Resume to get suggestions again now. This does not change Stop messages.</p><button class="btn quiet" type="button" data-action="resume">Resume now</button></div>
-      <div data-when="not-stopped"><h3>Stop messages</h3><p>Every app on this number stops texting this number, not only this one. Your membership stays. Text START to resume messages from the app you last talked with.</p><button class="btn quiet" type="button" data-action="stop">Stop messages</button></div>
+      <div data-when="not-stopped"><p>Stops texts from every app on this number. Your membership stays.</p><button class="btn quiet" type="button" data-action="stop">Stop messages</button></div>
       <div data-when="stopped" hidden><h3>Messages are stopped</h3><p>Text START to resume messages from the app you last talked with.</p></div>
-      <div><h3>Leave slop.date</h3><p>We delete your profile, messages and matching data for slop.date.</p><button class="btn quiet" type="button" data-action="leave">Leave slop.date</button></div>
+      <div><p>We delete your profile, messages and matching data for slop.date.</p><button class="btn quiet" type="button" data-action="leave">Leave slop.date</button></div>
     </div>
     <div class="actions change-number" data-change-number data-when="has-membership">
-      <div><h3>Change my number</h3><p>We text a code to your new number. Your memberships, your choices about messages and your data move to it. For your safety, this works only within 10 minutes of logging in with a code.</p>
+      <div><details><summary>Change my number</summary><p>Confirm your new number. Your data and choices move with you. Requires a sign-in within the last 10 minutes.</p>
         <form data-form="new-phone" novalidate>
           <div class="field"><label for="new-phone">New mobile number</label>
             <input id="new-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(212) 555-0123" required></div>
@@ -89,10 +88,10 @@
           <p class="error" data-error role="alert" hidden></p>
           <button class="btn quiet" type="submit" data-busy="Checking…">Change my number</button>
         </form>
-      </div>
+      </details></div>
     </div>
     <div class="actions">
-      <div class="danger-zone"><h3>Delete everything</h3><p>We delete all data tied to this phone number, everywhere Eliza Research Corporation holds it, and log you out. This cannot be undone.</p><button class="btn danger" type="button" data-action="delete-all">Delete everything</button></div>
+      <div class="danger-zone"><p>We delete all data tied to this phone number, everywhere Eliza Research Corporation holds it, and log you out. This cannot be undone.</p><button class="btn danger" type="button" data-action="delete-all">Delete everything</button></div>
     </div>
     <p><button class="linkish" type="button" data-action="logout">Log out</button></p>
 
@@ -115,8 +114,5 @@
   </section>
 </div>
 </main>
-<footer class="foot"><div class="wrap">
-  <p>slop.date is operated by Eliza Research Corporation. Help: <a href="/support">support</a> or <a href="mailto:help@ntwrk.party">help@ntwrk.party</a>. Message and data rates may apply. Text STOP to stop all texts from us, or "leave slop.date" to stop slop.date only. Text HELP for help.</p>
-  <nav aria-label="Legal"><a href="/safety">Safety notice</a><a href="/guidelines">Community guidelines</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/settings">Your data</a><a href="/support">Support</a></nav>
-</div></footer>
+<footer class="foot"><nav aria-label="Legal"><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav></footer>
 </body></html>

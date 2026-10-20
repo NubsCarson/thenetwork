@@ -3,19 +3,14 @@
 <title>Join · peon.biz</title><meta name="description" content="Join peon.biz.">
 <meta name="theme-color" content="#f08a24">
 <meta name="turnstile-sitekey" content="{{TURNSTILE_SITE_KEY}}">
-<link rel="stylesheet" href="./styles.css"><script type="module" src="../../shared/join.ts"></script></head>
-<body>
+<link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="../../shared/member.css"><script type="module" src="../../shared/join.ts"></script></head>
+<body class="member-pages">
 <a class="skip" href="#main">Skip to content</a>
 <div class="wrap top">
-  <a class="mark" href="/">peon<b>.biz</b></a>
-  <nav aria-label="Main"><a href="/join" aria-current="page">Join peon.biz</a><a href="/settings">Settings</a><a href="/privacy">Privacy</a></nav>
+  <a class="member-brand" href="/"><svg aria-hidden="true" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#f59a3c"/><path fill="#141414" d="M26 8h12l-3 9h-6Z"/><path fill="#141414" d="M28.5 19h7l6 26-9.5 12L22.5 45Z"/></svg>peon.biz</a>
+
 </div>
 <main id="main" class="narrow page">
-<h1>Join peon.biz</h1>
-<p class="lede">You can join peon.biz now. Introductions have not started yet.</p>
-<p class="small">You can join at 13 or older. Only adults 18 and older are matched. If you are under 18, peon.biz never matches you or introduces you to anyone.</p>
-<div class="audit"><h2>How we handle hiring decisions</h2>
-<p>Software only suggests possible fits. A person on our team reviews every introduction before we send it, and the team that hires makes every hiring decision. peon.biz does not decide who gets hired.</p></div>
 <div class="flow" data-join data-min-age="13"
   data-msg-under-age="You must be 13 or older to join peon.biz. We did not save your details."
   data-msg-invite-only="peon.biz is not open to new members right now. Please try again later.">
@@ -24,12 +19,12 @@
   <section data-step="loading" hidden><p aria-live="polite">Loading…</p></section>
 
   <section data-step="phone" hidden>
-    <h2>Your phone number</h2>
-    <p>We text you a code to check that the number is yours.</p>
+    <h2>Confirm your phone number</h2>
+
     <form data-form="phone" novalidate>
-      <div class="field"><label for="phone">Mobile number</label>
-        <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(212) 555-0123" required aria-describedby="phone-hint">
-        <p class="hint" id="phone-hint">US numbers only. Message and data rates may apply.</p></div>
+      <div class="field"><label class="sr-only" for="phone">Mobile number</label>
+        <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(212) 555-0123" required>
+        </div>
       <div class="human" data-turnstile></div>
       <p class="error" data-error role="alert" hidden></p>
       <button class="btn" type="submit" data-busy="Sending…">Text me a code</button>
@@ -38,32 +33,24 @@
 
   <section data-step="code" hidden>
     <h2>Enter the code</h2>
-    <p>We sent a code to <strong data-slot="phoneShown"></strong>. It can take a minute to arrive.</p>
+    <p>Sent to <strong data-slot="phoneShown"></strong>.</p>
     <form data-form="code" novalidate>
-      <div class="field"><label for="code">Code</label>
+      <div class="field"><label class="sr-only" for="code">Code</label>
         <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required data-focus></div>
       <p class="error" data-error role="alert" hidden></p>
       <div class="row"><button class="btn" type="submit" data-busy="Checking…">Continue</button>
-        <button class="linkish" type="button" data-action="resend">Send a new code</button>
-        <button class="linkish" type="button" data-action="change-number">Use a different number</button></div>
+        <button class="linkish" type="button" data-action="resend">Resend code</button>
+        <button class="linkish" type="button" data-action="change-number">Change number</button></div>
     </form>
   </section>
 
   <section data-step="profile" hidden>
-    <h2>A little about you</h2>
+    <h2>Confirm your details</h2>
     <form data-form="profile" novalidate>
       <div class="field"><label for="firstName">First name</label><input id="firstName" name="firstName" type="text" autocomplete="given-name" required data-focus></div>
       <div class="field"><label for="age">Age</label><input id="age" name="age" type="number" inputmode="numeric" min="1" max="120" required aria-describedby="age-hint">
-        <p class="hint" id="age-hint">You must be <span data-slot="minJoinAge">13</span> or older to join. Only adults 18 and older are matched.</p></div>
+        <p class="hint" id="age-hint">Join at <span data-slot="minJoinAge">13</span>+. Matching is 18+ only.</p></div>
 
-      <fieldset><legend>I am</legend><div class="choice">
-        <label><input type="radio" name="interests" value="looking-for-work" required>Looking for work</label>
-        <label><input type="radio" name="interests" value="hiring">Hiring for a team</label></div></fieldset>
-      <div class="field"><label for="neighborhood">Borough or neighbourhood <span class="hint">(optional)</span></label><input id="neighborhood" name="neighborhood" type="text" autocomplete="off" placeholder="Queens"></div>
-      <div class="field"><label for="zip">ZIP code <span class="hint">(optional)</span></label><input id="zip" name="zip" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="5" pattern="[0-9]{5}"></div>
-      <fieldset><legend>Kind of work <span class="hint">(optional)</span></legend><div class="chips"><label><input type="checkbox" name="interests" value="food-service">Food and hospitality</label><label><input type="checkbox" name="interests" value="retail">Retail</label><label><input type="checkbox" name="interests" value="trades">Trades</label><label><input type="checkbox" name="interests" value="office">Office and admin</label><label><input type="checkbox" name="interests" value="care">Care work</label><label><input type="checkbox" name="interests" value="tech">Tech</label><label><input type="checkbox" name="interests" value="creative">Creative</label><label><input type="checkbox" name="interests" value="delivery">Delivery and driving</label></div></fieldset>
-      <div class="field"><label for="about">One line: the work you want, or the role you are filling <span class="hint">(optional)</span></label><input id="about" name="about" type="text" maxlength="200" placeholder="Line cook, nights, Astoria or close by"></div>
-      <p class="hint">Do not send your race, religion, health, or immigration status. We do not need them, and we do not use them.</p>
       <label class="consent"><input type="checkbox" name="consent" required>
         <span data-consent-wording>I agree to receive recurring text messages from peon.biz at this number: questions about work or hiring, waitlist updates, introductions I agree to, and scheduling reminders. Message frequency varies. Message and data rates may apply. Reply STOP to stop and HELP for help. Consent is not a condition of any purchase.</span></label>
       <p class="hint">See the <a href="/terms#sms">text messaging terms</a>, <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>
@@ -73,14 +60,14 @@
   </section>
 
   <section data-step="done" hidden>
-    <h2>You're in, <span data-slot="firstName"></span>.</h2>
-    <p>Introductions have not started yet. We will text you when they start. Text STOP at any time to stop all texts, or "leave peon.biz" to stop peon.biz only.</p>
-    <p><a href="/settings">Settings</a></p>
+    <h2>You’re in, <span data-slot="firstName"></span>.</h2>
+    <p>Return to your agent to finish your profile. Introductions have not started yet.</p>
+    <p><a href="/settings">Account settings</a></p>
   </section>
 
   <section data-step="member" hidden>
     <h2>You're already in.</h2>
-    <p>You joined on <span data-slot="joinedAt"></span>. <a href="/settings">Go to settings</a> to see or change your membership.</p>
+    <p>Return to your agent, or <a href="/settings">open settings</a>.</p>
   </section>
 
   <section data-step="blocked" hidden>
@@ -90,8 +77,5 @@
   </section>
 </div>
 </main>
-<footer class="foot"><div class="wrap">
-  <p>peon.biz is operated by Eliza Research Corporation. Help: <a href="/support">support</a> or <a href="mailto:help@ntwrk.party">help@ntwrk.party</a>. Message and data rates may apply. Text STOP to stop all texts from us, or "leave peon.biz" to stop peon.biz only. Text HELP for help.</p>
-  <nav aria-label="Legal"><a href="/guidelines">Community guidelines</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/settings">Your data</a><a href="/support">Support</a></nav>
-</div></footer>
+<footer class="foot"><nav aria-label="Legal"><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav></footer>
 </body></html>

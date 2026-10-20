@@ -15,7 +15,7 @@ Each site's Worker forwards `/mcp`, `/oauth/*` and `/.well-known/oauth-*` to the
 | `GET /.well-known/oauth-protected-resource[/mcp[/openai]]` | RFC 9728 metadata. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata. The issuer is the site origin. |
 | `POST /oauth/register` | RFC 7591 dynamic client registration. |
-| `GET /oauth/authorize`, `POST /oauth/authorize/{phone,code,consent}` | The person's sign-in and consent pages. |
+| `GET /oauth/authorize`, `POST /oauth/authorize/{phone,code,cancel}` | Phone verification, automatic scoped access and cancellation. |
 | `POST /oauth/token`, `POST /oauth/revoke` | Tokens (authorization code with PKCE S256, refresh with rotation) and RFC 7009 revocation. |
 | `GET /oauth/consents`, `POST /oauth/consents/revoke` | The person's list of connected assistants. The person can remove each one. |
 
@@ -37,7 +37,7 @@ Every input schema has `app` only (`submit_profile`: `app` and `about`) and `add
 - **Storage.** Tokens, codes and client secrets are stored as sha256 hashes only. A grant keeps the platform's keyed hash of the number (`phone_key`, HMAC with PLATFORM_HASH_KEY), never the number; check_status finds the person through `platform.people.phone_hash`. A sign-in request keeps the number only while it is open (at most 10 minutes, then swept). Leaving an app or deleting everything deletes that app's grants; revoked and expired grants are deleted after 30 days, and registered clients that never got a grant after a day.
 - **A grant made before the number had a person** never follows a person made later (who may be a new owner of the number): it answers `invalid_grant`, and the person connects again.
 - **One app per client.** A token is valid only at the resource it was issued for (RFC 8707). A peon token is refused at slop.date and at `/mcp/openai`.
-- **New owner.** If the phone now belongs to another person than at consent time, the grant is revoked.
+- **New owner.** If the phone now belongs to another person than when access was granted, the grant is revoked.
 - **OpenAI surface.** `/mcp/openai`, and every client whose redirect URI is on chatgpt.com or openai.com, never lists or offers slop. Such a client cannot register on slop.date.
 - **Abuse.** Rate limits per IP for registration, authorize, token and MCP calls, and per grant for `check_status` and `submit_profile`. The platform OTP limits apply to the sign-in. The "text me a code" answer is the same for every number and takes at least 700 ms.
 - **Audit.** `oauth.audit` keeps one row for each registration, consent, denial, code, token, refresh, revocation and replay. It never holds a token, a code, a secret or a phone number.
@@ -75,7 +75,7 @@ unknown environments, and `NODE_ENV=production` refuse this setting.
 This does not enable the hosted Slop service or its public OpenAI plugin.
 The public Slop `/mcp/openai` endpoint remains unavailable.
 
-The pilot uses the existing phone account, OAuth consent, app/resource binding,
+The pilot uses the existing phone account, OAuth sign-in, app/resource binding,
 and profile tools. It adds no model service or account store. Use fictional phones,
 fake OTP, and dry-run sends for local acceptance. Run the private ChatGPT scenario
 in `tests/e2e/platform.e2e.test.ts` for the complete local service journey.
@@ -99,8 +99,7 @@ Only DCR clients whose redirects all use the supported ChatGPT hosts qualify.
 Client names do not establish trust. The current person must be allowlisted, have
 the same phone identity, have an active/onboarding Slop membership without review,
 have a stored age floor of at least 18, and have no hold or ban. These checks apply
-at consent, code exchange, refresh and authenticated MCP requests. Switching the
-browser account before consent cannot transfer another person's eligibility.
+at authorization, code exchange, refresh and authenticated MCP requests. Issued codes remain bound to the verified account even if the browser account changes.
 
 This pilot offers onboarding only: `app_info`, `start_signup`, `check_status` and
 `submit_profile`. `get_updates` is omitted and refused for pilot connections.
@@ -127,3 +126,7 @@ bun run plugins/build.ts --check                               # the plugin skil
 ```
 
 The dev server binds to 127.0.0.1 only. Use 555-01xx numbers only.
+
+Assistant connections return directly after phone verification (or an existing valid session).
+No separate permission screen is shown. The requested scopes still limit access;
+`/oauth/consents` lists connected assistants and lets the person revoke them.
