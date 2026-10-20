@@ -479,7 +479,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
           return response;
         }
         const approved = await store.takeConsentRequest(r.id, now());
-        if (!approved?.e164) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
+        if (!approved?.e164 || approved.e164 !== r.e164 || approved.personId !== r.personId) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
         const response = await finishAuthorization(c, { ...approved, e164: approved.e164 }, client);
         if (current?.setCookie) response.headers.append("set-cookie", current.setCookie);
         return response;

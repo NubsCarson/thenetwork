@@ -592,6 +592,20 @@ describe("explicit client approval boundary", () => {
     noIssuedAccess(env);
   });
 
+  test("a pending identity changed after validation cannot receive a grant", async () => {
+    for (const patch of [{ e164: PHONE_B }, { personId: "different-owner" }]) {
+      const env = setup(); const who = await member(env); const client = await register(env, DOMAIN);
+      const request = await begin(env, client.body.client_id, who.cookie);
+      const take = env.store.takeConsentRequest.bind(env.store);
+      env.store.takeConsentRequest = async (id, at) => {
+        await env.store.updateAuthRequest(id, patch);
+        return take(id, at);
+      };
+      expect((await post(env, "/oauth/authorize/consent", request.rid, request.cookie, { decision: "approve" })).status).toBe(400);
+      noIssuedAccess(env);
+    }
+  });
+
   test("switching the signed-in account cannot approve the earlier account's request", async () => {
     const env = setup(); const who = await member(env); const other = await member(env, PHONE_B); const client = await register(env, DOMAIN); const request = await begin(env, client.body.client_id, who.cookie);
     const switched = request.cookie.replace(who.cookie, other.cookie);

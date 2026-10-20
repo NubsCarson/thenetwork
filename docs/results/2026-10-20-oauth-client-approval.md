@@ -39,3 +39,7 @@ The sole integration failure was the staging-authority test's shared e2e helper 
 ## Registered callback CSP
 
 Independent composition review also found that a same-origin approval POST followed by a redirect needs the registered callback origin in the permission page's form-action policy. The permission page now permits only self plus that exact validated origin, for both existing-session and phone-code paths. The form action itself remains the site's consent endpoint; posted client/scope/resource overrides remain ignored. The source-level header regression failed before this repair and all nine boundary cases passed afterward on local Bun1.3.14; affected TypeScript diagnostics passed. This is a policy/header proof, not a hosted-browser acceptance claim. See the [CSP form-action navigation check](https://www.w3.org/TR/CSP/#directive-form-action).
+
+## Identity at atomic consent consumption
+
+The final consumed request must still have the same verified phone and person as the request just validated. A race regression changes either field during the awaited consume operation and requires no grant, code or consent audit. It failed before the comparison; the repaired boundary suite passed all ten cases (74 assertions) on local Bun1.3.14, and affected TypeScript diagnostics passed. Both mismatches fail closed after consuming the stale request. Normal successor CI remains required.
