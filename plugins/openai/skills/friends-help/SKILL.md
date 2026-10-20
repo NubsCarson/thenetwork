@@ -8,7 +8,7 @@ metadata:
   site: https://friends.help
   mcp: "https://ntwrk.party/mcp/openai"
   operator: Eliza Research Corporation
-  version: "1.1.4"
+  version: "1.1.5"
 ---
 
 # friends.help
@@ -43,8 +43,7 @@ or needs that detail to use an available option. Keep any actual eligibility res
 When the person asks to sign up or change their profile, use what they have already told you.
 Ask only for missing facts, without repeating questions.
 When they ask to change interests or the profile, keep the conversation here: confirm the changed wording,
-then use submit_profile once as described below. Do not tell them to edit interests in settings;
-settings currently handles home and account controls.
+then use submit_profile once as described below.
 
 Keep membership, profile receipt, matching and delivery separate. An active membership or a
 next_step suggestion does not prove that matching or messages are enabled. Do not say "ready
