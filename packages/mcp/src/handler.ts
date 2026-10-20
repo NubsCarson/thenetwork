@@ -11,8 +11,8 @@ import { verifyProxyHeaders } from "@thenetwork/platform/src/proxy.ts";
 import { readCappedText } from "@thenetwork/platform/src/body.ts";
 import { defaultApps, defaultHostMap, type McpApp, type McpAppId, type Surface } from "./apps.ts";
 import type { AssistantKind, PlatformHooks, SignedIn } from "./hooks.ts";
-import { codePage, consentPage, consentsPage, messagePage, phonePage } from "./pages.ts";
-import { MemoryOAuthStore, type AuthCode, type ClientAuthMethod, type Grant, type OAuthClient, type OAuthStore, type Scope, SCOPES, type Token } from "./store.ts";
+import { codePage, consentsPage, messagePage, phonePage } from "./pages.ts";
+import { MemoryOAuthStore, type AuthCode, type AuthRequest, type ClientAuthMethod, type Grant, type OAuthClient, type OAuthStore, type Scope, SCOPES, type Token } from "./store.ts";
 import { callTool, checkArgs, INSTRUCTIONS, TOOL_NAMES, TOOL_SCOPE, type ToolName, toolDefs } from "./tools.ts";
 import { cookieValue, isLoopbackHost, json, pkceS256, randomId, randomToken, readForm, readJson, safeEqual, sha256hex, validChallenge, validVerifier } from "./util.ts";
 
@@ -367,7 +367,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     const state = q.get("state");
     // A malformed request is an error page here, never a redirect (RFC 9700 4.11.2): open registration
     // would otherwise let anyone bounce a person from this site to any https page with no click.
-    // Only the person's own "Deny" on the consent page redirects back with an error.
+    // Only the person's Cancel action redirects back with an error.
     const fail = (_error: string, description: string) => messagePage(c.app, "This link does not work", `The assistant sent a sign-in link this site cannot use (${description}). Go back to the assistant and try again.`, 400);
     if (q.get("response_type") !== "code") return fail("unsupported_response_type", "response_type must be code");
     const challengeIn = q.get("code_challenge");
@@ -397,8 +397,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return messagePage(c.app, "Not available", "This account cannot use this assistant connection.", 403);
       }
       if (signedIn.setCookie) cookieOut.push(signedIn.setCookie);
-      await store.updateAuthRequest(r.id, { e164: signedIn.e164, personId: signedIn.personId, step: "consent" });
-      res = consentPage(c.app, r.id, client.name, redirectHost, new URL(redirectUri).origin, scopes);
+      res = await finishAuthorization(c, { ...r, e164: signedIn.e164, personId: signedIn.personId }, client);
+      cookieOut.shift();
     } else {
       res = phonePage(c.app, r.id, client.name, redirectHost, { turnstileSiteKey: o.turnstile?.siteKey });
     }
@@ -416,7 +416,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     return client ? { r, client } : undefined;
   }
 
-  async function authorizeStep(c: Ctx, step: "phone" | "code" | "consent"): Promise<Response> {
+  async function authorizeStep(c: Ctx, step: "phone" | "code" | "cancel"): Promise<Response> {
     if (c.req.method !== "POST") return json(405, { error: "method_not_allowed" }, { allow: "POST" });
     if (!originOk(c)) return messagePage(c.app, "Not allowed", "This form must be sent from this site.", 403);
     const form = await readForm(c.req);
@@ -457,28 +457,20 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         res.headers.append("set-cookie", clearCookie);
         return res;
       }
-      await store.updateAuthRequest(r.id, { personId: who.personId, step: "consent" });
-      const res = consentPage(c.app, r.id, client.name, redirectHost, new URL(r.redirectUri).origin, r.scopes);
+      const res = await finishAuthorization(c, { ...r, e164: r.e164, personId: who.personId }, client);
       const site = o.platform.createSession ? await o.platform.createSession(c.app.id, { e164: r.e164, personId: who.personId }) : undefined;
       if (site) res.headers.append("set-cookie", site);
       return res;
     }
 
-    // consent
-    const decision = form.get("decision");
-    if (decision !== "approve" || r.step !== "consent" || !r.e164) {
-      await store.deleteAuthRequest(r.id);
-      await store.audit({ at: now(), kind: "consent_denied", clientId: client.id, grantId: null, app: c.app.id, detail: null });
-      return redirectTo(r.redirectUri, { error: "access_denied", error_description: "The person did not allow access", state: r.state, iss: c.issuer }, 303, { "set-cookie": clearCookie });
-    }
-    if (customSlopClient(c, client)) {
-      const current = await o.platform.session!(c.app.id, c.req);
-      if (!current || current.personId !== r.personId || o.platform.phoneKey(current.e164) !== o.platform.phoneKey(r.e164)
-        || !(await customSlopEligible(c, client, r.personId, o.platform.phoneKey(r.e164)))) {
-        await store.deleteAuthRequest(r.id);
-        return messagePage(c.app, "Not available", "This account cannot use this assistant connection.", 403);
-      }
-    }
+    await store.deleteAuthRequest(r.id);
+    await store.audit({ at: now(), kind: "consent_denied", clientId: client.id, grantId: null, app: c.app.id, detail: null });
+    return redirectTo(r.redirectUri, { error: "access_denied", error_description: "Connection cancelled", state: r.state, iss: c.issuer }, 303, { "set-cookie": clearCookie });
+  }
+
+  /** Phone ownership is the final step; issue only the validated request's scoped access. */
+  async function finishAuthorization(c: Ctx, r: AuthRequest & { e164: string }, client: OAuthClient): Promise<Response> {
+    const clearCookie = `${browserCookie(c.app)}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookies(c.app) ? "; Secure" : ""}`;
     const at = now();
     const grant: Grant = { id: `grant_${randomId()}`, clientId: client.id, app: c.app.id, phoneKey: o.platform.phoneKey(r.e164), personId: r.personId, scopes: r.scopes, resource: r.resource, createdAt: at, expiresAt: at + ttl.grantMs, revokedAt: null };
     await store.putGrant(grant);
@@ -819,8 +811,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return authorizeStep(c, "phone");
       case "/oauth/authorize/code":
         return authorizeStep(c, "code");
-      case "/oauth/authorize/consent":
-        return authorizeStep(c, "consent");
+      case "/oauth/authorize/cancel":
+        return authorizeStep(c, "cancel");
       case "/oauth/token": {
         const res = await token(c);
         res.headers.set("access-control-allow-origin", "*");

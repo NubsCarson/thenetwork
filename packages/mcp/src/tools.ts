@@ -41,13 +41,13 @@ export function toolDefs(apps: Record<McpAppId, McpApp>, surface: Surface, host:
     join: object({ mode: joinMode, url: text, keyword: nullableText, how: text }),
     ages, adults_only: { type: "array", items: text }, stop: text,
     consent_rules: { type: "array", items: text },
-    links: object({ privacy: text, terms: text, sms_terms: nullableText, safety: nullableText, support: text }),
+    links: object({ privacy: text, terms: text, sms_terms: nullableText, support: text }),
   });
   return [
     {
       name: "app_info",
       title: "About the apps",
-      description: "Public facts about one app powered by The Network, or about all of them: what it is for, who can join, how a person joins, and links to its privacy, terms and safety pages. Never returns anything about a person.",
+      description: "Public facts about one app powered by The Network, or about all of them: what it is for, who can join, how a person joins, and links to its privacy and terms pages. Never returns anything about a person.",
       inputSchema: { type: "object", properties: { app: appProp("One app. Leave it out for all apps.") }, additionalProperties: false },
       outputSchema: { type: "object", anyOf: [publicApp, object({ apps: { type: "array", items: publicApp } })] },
       annotations: annotations("About the apps"),
@@ -214,7 +214,7 @@ function publicInfo(a: McpApp, surface: Surface) {
       "Nothing crosses from one app to another unless the person shares it.",
       "The person signs themselves up and types their own code on the site. An assistant never handles the code.",
     ],
-    links: { privacy: a.links.privacy, terms: a.links.terms, sms_terms: a.links.smsTerms, safety: a.links.safety, support: a.links.support },
+    links: { privacy: a.links.privacy, terms: a.links.terms, sms_terms: a.links.smsTerms, support: a.links.support },
   };
 }
 

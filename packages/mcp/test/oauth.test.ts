@@ -127,8 +127,10 @@ describe("authorization code with PKCE", () => {
     const bad = await post("/oauth/authorize/code", { code: "999999" });
     expect(bad.status).toBe(400);
     expect(await bad.text()).toContain("did not work");
-    // Approving before signing in is a denial, never a grant.
-    const deny = await post("/oauth/authorize/consent", { decision: "approve" });
+    // The removed approval endpoint cannot bypass phone verification.
+    expect((await post("/oauth/authorize/consent", { decision: "approve" })).status).toBe(404);
+    // Cancellation before signing in never grants access.
+    const deny = await post("/oauth/authorize/cancel", {});
     expect(new URL(deny.headers.get("location")!).searchParams.get("error")).toBe("access_denied");
     expect([...(env.store as any).grants.values()]).toHaveLength(0);
   });
@@ -386,7 +388,7 @@ describe("abuse limits", () => {
       const rid = /name="rid" value="([^"]+)"/.exec(await start.text())![1]!;
       const cookie = /(mcp_auth=[^;]+|__Host-mcp_auth=[^;]+)/.exec(start.headers.get("set-cookie")!)![1]!;
       const res = await env.fetch(new Request(`${origin(PEON)}/oauth/authorize/phone`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", cookie }, body: new URLSearchParams({ rid, phone }).toString() }));
-      return (await res.text()).replaceAll(rid, "RID").replace(/\d{4}\b(?= a code)|ending in \d{4}/, "ending in XXXX");
+      return (await res.text()).replaceAll(rid, "RID").replace(/Sent to ••• \d{4}/, "Sent to ••• XXXX");
     };
     expect(await page(PHONE_A)).toBe(await page(PHONE_B));
   });
@@ -425,7 +427,8 @@ describe("Client ID Metadata Documents", () => {
     const meta = await (await env.fetch(new Request(`${origin(PEON)}/.well-known/oauth-authorization-server`))).json() as Record<string, any>;
     expect(meta.client_id_metadata_document_supported).toBe(true);
     const flow = await browserFlow(env, PEON, CID, PHONE_A);
-    expect(flow.html).toContain("Doc Client");
+    expect(flow.status).toBe(303);
+    expect((await env.store.getClient(CID))?.name).toBe("Doc Client");
     const code = new URL(flow.location!).searchParams.get("code")!;
     const t = await tokenRequest(env, PEON, { grant_type: "authorization_code", code, redirect_uri: "https://client.example/callback", client_id: CID, code_verifier: VERIFIER });
     expect(t.res.status).toBe(200);

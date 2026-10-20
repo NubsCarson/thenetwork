@@ -5,6 +5,7 @@
 //   data-min-age="13"           the page's default when /api/app cannot be read
 // Steps: loading, invite, phone, code, profile, member, blocked, done.
 import { api, type ApiError, type Me } from "./api.ts";
+import { prefillJoin } from "./prefill.ts";
 import { mountAuth } from "./auth.ts";
 import { $, busy, fill, formatDate, message, plainText, ready, setError, showStep, when } from "./ui.ts";
 
@@ -45,6 +46,7 @@ export async function mountJoin(root: HTMLElement): Promise<void> {
   profile?.addEventListener("submit", event => event.preventDefault());
   // Never reuse browser-restored Join values from an earlier authenticated account.
   profile?.reset();
+  prefillJoin(root);
   const edited = new Set<string>();
   profile?.addEventListener("input", ev => { const input = ev.target as HTMLInputElement; if (input.name) edited.add(input.name); });
   profile?.addEventListener("change", ev => { const input = ev.target as HTMLInputElement; if (input.name) edited.add(input.name); });

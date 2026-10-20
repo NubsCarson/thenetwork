@@ -69,7 +69,7 @@ const ridOf = (html: string) => /name="rid" value="([^"]+)"/.exec(html)?.[1];
 
 export interface FlowOpts { scope?: string; redirectUri?: string; verifier?: string; resource?: string; state?: string; extraQuery?: Record<string, string>; deny?: boolean; cookie?: string }
 
-/** The browser part: authorize, sign in with the texted code, approve. Returns the redirect Location. */
+/** The browser part: authorize, sign in with the texted code. Returns the redirect Location. */
 export async function browserFlow(env: Env, domain: string, clientId: string, phone: string, f: FlowOpts = {}) {
   const q = new URLSearchParams({
     response_type: "code", client_id: clientId, redirect_uri: f.redirectUri ?? "https://client.example/callback",
@@ -77,7 +77,8 @@ export async function browserFlow(env: Env, domain: string, clientId: string, ph
     ...(f.scope !== undefined ? { scope: f.scope } : {}), ...(f.resource ? { resource: f.resource } : {}), ...f.extraQuery,
   });
   const start = await env.fetch(new Request(`${origin(domain)}/oauth/authorize?${q}`, { headers: f.cookie ? { cookie: f.cookie } : {} }));
-  const html = await start.text();
+  let html = await start.text();
+  if (start.headers.has("location")) return { start, html, location: start.headers.get("location"), status: start.status, siteCookie: start.headers.get("set-cookie") };
   const browser = /((?:__Host-)?mcp_auth=[^;]+)/.exec(start.headers.get("set-cookie") ?? "")?.[1];
   const rid = ridOf(html);
   if (!rid || !browser) return { start, html, location: null as string | null };
@@ -85,19 +86,15 @@ export async function browserFlow(env: Env, domain: string, clientId: string, ph
   const post = (path: string, form: Record<string, string>) => env.fetch(new Request(`${origin(domain)}${path}`, {
     method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", cookie, origin: origin(domain) }, body: new URLSearchParams({ rid, ...form }).toString(),
   }));
-  let siteCookie: string | null = null;
-  if (!html.includes("Allow this assistant?")) {
-    env.clock.t += 31_000; // the platform's 30 s gap between codes to one number
-    const p = await post("/oauth/authorize/phone", { phone });
-    if (p.status !== 200) return { start, html: await p.text(), location: null };
-    const code = env.provider.last(phone);
-    const c = await post("/oauth/authorize/code", { code: code ?? "000000" });
-    siteCookie = c.headers.get("set-cookie");
-    const ch = await c.text();
-    if (!ch.includes("Allow this assistant?")) return { start, html: ch, location: null };
+  if (f.deny) {
+    const done = await post("/oauth/authorize/cancel", {});
+    return { start, html, location: done.headers.get("location"), status: done.status, siteCookie: null };
   }
-  const done = await post("/oauth/authorize/consent", { decision: f.deny ? "deny" : "approve" });
-  return { start, html, location: done.headers.get("location"), status: done.status, siteCookie };
+  env.clock.t += 31_000;
+  const p = await post("/oauth/authorize/phone", { phone });
+  if (p.status !== 200) return { start, html: await p.text(), location: null };
+  const done = await post("/oauth/authorize/code", { code: env.provider.last(phone) ?? "000000" });
+  return { start, html: await done.text(), location: done.headers.get("location"), status: done.status, siteCookie: done.headers.get("set-cookie") };
 }
 
 export async function tokenRequest(env: Env, domain: string, form: Record<string, string>, headers: Record<string, string> = {}) {
@@ -107,7 +104,7 @@ export async function tokenRequest(env: Env, domain: string, form: Record<string
   return { res, body: (await res.json()) as Record<string, any> };
 }
 
-/** Register, sign in, approve and exchange the code: an access and a refresh token. */
+/** Register, sign in and exchange the code: an access and a refresh token. */
 export async function connect(env: Env, domain: string, phone: string, f: FlowOpts & { register?: Record<string, unknown> } = {}) {
   const reg = await register(env, domain, f.register);
   const flow = await browserFlow(env, domain, reg.body.client_id, phone, f);

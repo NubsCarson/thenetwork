@@ -81,7 +81,7 @@ The person signs up through you, in this conversation:
    In ChatGPT, add https://ntwrk.party/mcp/openai instead; /mcp does not authorize ChatGPT clients.
    Reading this file does not install a connector or authorize access. If the client cannot add it,
    use the text link in "Phone or computer"; do not claim success and never send the profile yourself.
-   The person signs in and allows access on our page. A code is skipped only when that browser
+   The person confirms their phone on our page. Access connects automatically. A code is skipped only when that browser
    has a current session for this app. Call check_status first and confirm its app is ntwrk.
    If the connection names another app, stop and connect to this app; never submit across apps.
    If membership is not active or onboarding, follow its next step; do not submit or claim joined.
@@ -127,6 +127,6 @@ STOP stops every text from this number, and a safety hold or ban after a report 
 
 ## Support
 
-- Support: https://ntwrk.party/support (email help@ntwrk.party)
+- Email: help@ntwrk.party
 - Privacy: https://ntwrk.party/privacy
 - Terms and text messaging terms: https://ntwrk.party/terms

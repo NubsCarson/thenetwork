@@ -24,12 +24,12 @@ export interface McpApp {
   ages: { join: number; match: number };
   /** Rules that apply to adults only, in plain words. */
   adultsOnly: string[];
-  links: { site: string; join: string; privacy: string; terms: string; smsTerms: string | null; safety: string | null; support: string };
+  links: { site: string; join: string; privacy: string; terms: string; smsTerms: string | null; support: string };
   /** False: never listed or offered on the OpenAI surface. */
   openai: boolean;
 }
 
-function app(id: McpAppId, name: string, domain: string, what: string, keyword: string | null, extra: { adultsOnly?: string[]; smsTerms?: boolean; safety?: boolean; openai?: boolean }): McpApp {
+function app(id: McpAppId, name: string, domain: string, what: string, keyword: string | null, extra: { adultsOnly?: string[]; smsTerms?: boolean; openai?: boolean }): McpApp {
   const p = PLATFORM_APPS[id];
   const site = `https://${domain}`;
   return {
@@ -39,7 +39,7 @@ function app(id: McpAppId, name: string, domain: string, what: string, keyword: 
     adultsOnly: ["Matching and introductions to other people are for adults 18 or older only. Nobody under 18 is ever matched or introduced.", ...(extra.adultsOnly ?? [])],
     links: {
       site, join: `${site}/join`, privacy: `${site}/privacy`, terms: `${site}/terms`,
-      smsTerms: extra.smsTerms === false ? null : `${site}/terms#sms`, safety: extra.safety ? `${site}/safety` : null,
+      smsTerms: extra.smsTerms === false ? null : `${site}/terms#sms`,
       support: `mailto:${SUPPORT_EMAIL}`,
     },
     openai: extra.openai ?? true,
@@ -52,7 +52,7 @@ export function defaultApps(): Record<McpAppId, McpApp> {
     ntwrk: app("ntwrk", "The Network", "ntwrk.party", "The home of every app below: an agent you text that helps with people, plans and events you ask for.", null, { smsTerms: false }),
     slop: app("slop", "slop.date", "slop.date", "Dating by text message. A matchmaker suggests one person now and then, and nobody is introduced unless both say yes.", "slop", {
       adultsOnly: ["Photos and any rating of looks are for adults (18+) only; the stated age counts (no ID check). They are never asked of, stored for or shown to anyone under 18."],
-      safety: true, openai: false,
+      openai: false,
     }),
     peon: app("peon", "peon.biz", "peon.biz", "Work and hiring by text message. It introduces people looking for work to people hiring, and a person makes every decision.", "peon", {}),
     friends: app("friends", "friends.help", "friends.help", "Friends and plans in New York City by text message, in small groups at public places.", "friends", {}),

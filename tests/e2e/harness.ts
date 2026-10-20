@@ -247,17 +247,15 @@ export async function connectMcp(st: Stack, app: AppId, phone: string, o: { brow
   const q = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: redirect, code_challenge: pkceS256(VERIFIER), code_challenge_method: "S256", state: "e2e", resource });
   const page = await st.site(app, `/oauth/authorize?${q}`, { browser: b });
   let html = await page.text();
-  const rid = /name="rid" value="([^"]+)"/.exec(html)?.[1];
-  if (!rid) return { reg, client, token: undefined, html };
-  if (!html.includes("Allow this assistant?")) {
+  let done = page;
+  if (!page.headers.has("location")) {
+    const rid = /name="rid" value="([^"]+)"/.exec(html)?.[1];
+    if (!rid) return { reg, client, token: undefined, html };
     st.clock.advance(31_000);
-    const p = await st.site(app, "/oauth/authorize/phone", { browser: b, form: { rid, phone } });
-    html = await p.text();
-    const c = await st.site(app, "/oauth/authorize/code", { browser: b, form: { rid, code: st.otp.last(phone) ?? "000000" } });
-    html = await c.text();
-    if (!html.includes("Allow this assistant?")) return { reg, client, token: undefined, html };
+    await st.site(app, "/oauth/authorize/phone", { browser: b, form: { rid, phone } });
+    done = await st.site(app, "/oauth/authorize/code", { browser: b, form: { rid, code: st.otp.last(phone) ?? "000000" } });
+    html = await done.clone().text();
   }
-  const done = await st.site(app, "/oauth/authorize/consent", { browser: b, form: { rid, decision: "approve" } });
   const loc = done.headers.get("location");
   const code = loc ? new URL(loc).searchParams.get("code") : null;
   if (!code) return { reg, client, token: undefined, html: await done.text() };
