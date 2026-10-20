@@ -37,7 +37,9 @@ export const AGENTS: Agent[] = [
 ];
 
 /** What a person types into their agent. The tests and the staging rewrite read this exact sentence. */
-export const promptFor = (s: Pick<Site, "domain">, version: string) => `Read https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)} and follow it.`;
+const skillUrlFor = (s: Pick<Site, "domain">, version: string) =>
+  `https://${s.domain}/SKILL.md${s.domain === "slop.date" ? "" : `?version=${encodeURIComponent(version)}`}`;
+export const promptFor = (s: Pick<Site, "domain">, version: string) => `Read ${skillUrlFor(s, version)} and follow it.`;
 
 /** The first text that joins this app on the shared line (packages/platform/src/apps.ts keywordApp). */
 export const keywordFor = (s: Pick<Site, "app">) => (s.app === "ntwrk" ? "network" : s.app);
@@ -60,7 +62,7 @@ const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").repl
 export function agentRow(s: Pick<Site, "domain">, version: string): string {
   const prompt = promptFor(s, version);
   const q = encodeURIComponent(prompt);
-  const skill = encodeURIComponent(`https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)}`);
+  const skill = encodeURIComponent(skillUrlFor(s, version));
   const tiles = AGENTS.map((a) => {
     const common = `class="l-agent" data-agent="${a.id}" data-tip="${esc(a.name)}" data-toast="${esc(a.toast)}"${a.desktopOnly ? ' data-only="desktop"' : ""}`;
     return a.href
