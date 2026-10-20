@@ -10,7 +10,7 @@ import { devShortcutsAllowed, ipBucket, signupAccountView, type Env } from "@the
 import { verifyProxyHeaders } from "@thenetwork/platform/src/proxy.ts";
 import { readCappedText } from "@thenetwork/platform/src/body.ts";
 import { defaultApps, defaultHostMap, type McpApp, type McpAppId, type Surface } from "./apps.ts";
-import type { AssistantKind, PlatformHooks, SignedIn } from "./hooks.ts";
+import type { AssistantKind, PlatformHooks } from "./hooks.ts";
 import { codePage, consentPage, consentsPage, messagePage, phonePage } from "./pages.ts";
 import { MemoryOAuthStore, type AuthCode, type AuthRequest, type ClientAuthMethod, type Grant, type OAuthClient, type OAuthStore, type Scope, SCOPES, type Token } from "./store.ts";
 import { callTool, checkArgs, INSTRUCTIONS, TOOL_NAMES, TOOL_SCOPE, type ToolName, toolDefs } from "./tools.ts";
@@ -388,6 +388,10 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     await store.putAuthRequest(r);
     const cookie = `${browserCookie(c.app)}=${browser}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(ttl.requestMs / 1000)}${secureCookies(c.app) ? "; Secure" : ""}`;
     const signedIn = o.platform.session ? await o.platform.session(c.app.id, c.req) : undefined;
+    if(signedIn==="unavailable"){
+      const response=browserUnavailable(c,`/oauth/cloud-return?rid=${r.id}`);
+      response.headers.append("set-cookie",cookie);return response;
+    }
     const redirectHost = new URL(redirectUri).host;
     const cookieOut = [cookie];
     let res: Response;
@@ -398,7 +402,12 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       }
       if (signedIn.setCookie) cookieOut.push(signedIn.setCookie);
       await store.updateAuthRequest(r.id, { e164: signedIn.e164, personId: signedIn.personId, step: "consent" });
-      res = consentPage(c.app, r.id, client.name, redirectHost, new URL(r.redirectUri).origin, r.scopes);
+      res = consentPage(c.app, r.id, client.name, redirectHost, new URL(r.redirectUri).origin, scopes);
+    } else if(o.platform.cloudAuthorityRequired?.(c.app.id)) {
+      const handoff=await o.platform.beginCloudOAuth?.(c.app.id,r.id);
+      if(!handoff){await store.deleteAuthRequest(r.id);return messagePage(c.app,"Sign-in unavailable","Go back to the assistant and try again later.",503);}
+      cookieOut.push(handoff.setCookie);
+      res=new Response(null,{status:302,headers:{location:handoff.url,"cache-control":"no-store"}});
     } else {
       res = phonePage(c.app, r.id, client.name, redirectHost, { turnstileSiteKey: o.turnstile?.siteKey });
     }
@@ -414,6 +423,23 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     if (!r || r.app !== c.app.id || r.expiresAt <= now() || !browser || !safeEqual(sha256hex(browser), r.browserHash)) return undefined;
     const client = await store.getClient(r.clientId);
     return client ? { r, client } : undefined;
+  }
+
+  /** Resume only the same browser's unexpired request; consent is still a separate POST. */
+  async function authorizeCloudReturn(c: Ctx): Promise<Response> {
+    const keys=[...c.url.searchParams.keys()],rid=c.url.searchParams.get("rid")??"";
+    if(keys.length!==1 || keys[0]!=="rid" || rid.length!==22 || !/^[A-Za-z0-9_-]{22}$/.test(rid) || !o.platform.cloudAuthorityRequired?.(c.app.id))return messagePage(c.app,"This page has expired","Go back to the assistant and connect again.",400);
+    const live=await liveRequest(c,new URLSearchParams({rid}));
+    if(!live || live.r.step!=="phone")return messagePage(c.app,"This page has expired","Go back to the assistant and connect again.",400);
+    const {r,client}=live;
+    if(client.app!==c.app.id || !client.redirectUris.includes(r.redirectUri) || !canonicalResource(r.resource,c.issuer) || (client.surface==="openai" && r.resource!==resourceFor(c.issuer,"openai")) || (customSlopClient(c,client) && r.resource!==resourceFor(c.issuer,"full")) || !validChallenge(r.codeChallenge) || openAiUnavailable(c,client))return messagePage(c.app,"This link does not work","Go back to the assistant and connect again.",400);
+    const who=await o.platform.session?.(c.app.id,c.req);
+    if(who==="unavailable")return browserUnavailable(c,c.url.pathname+c.url.search);
+    if(!who || !(await customSlopEligible(c,client,who.personId,o.platform.phoneKey(who.e164))))return messagePage(c.app,"Connect again","Return to your agent or text conversation and connect again.",403);
+    await store.updateAuthRequest(r.id,{e164:who.e164,personId:who.personId,step:"consent"});
+    const response=consentPage(c.app,r.id,client.name,new URL(r.redirectUri).host,new URL(r.redirectUri).origin,r.scopes);
+    if(who.setCookie)response.headers.append("set-cookie",who.setCookie);
+    return response;
   }
 
   async function authorizeStep(c: Ctx, step: "phone" | "code" | "consent" | "cancel"): Promise<Response> {
@@ -467,8 +493,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     if (step === "consent") {
       if (r.step !== "consent" || !r.e164) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
       if (form.get("decision") === "approve") {
-        // A verified phone/session is identity, not permission. Only this bound POST approves access.
         const current = o.platform.session ? await o.platform.session(c.app.id, c.req) : undefined;
+        if (current === "unavailable") return consentUnavailable(c, r, client);
         const owner = await o.platform.login(r.e164);
         if ((o.platform.session && (!current || current.personId !== r.personId || current.e164 !== r.e164))
           || owner === "held" || owner.personId !== r.personId
@@ -478,9 +504,12 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
           response.headers.append("set-cookie", clearCookie);
           return response;
         }
-        const approved = await store.takeConsentRequest(r.id, now());
-        if (!approved?.e164 || approved.e164 !== r.e164 || approved.personId !== r.personId) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
-        const response = await finishAuthorization(c, { ...approved, e164: approved.e164 }, client);
+        const required = o.platform.cloudAuthorityRequired?.(c.app.id);
+        const authority = required ? await o.platform.cloudGrantAuthority?.(c.app.id, c.req, r.resource) : undefined;
+        if (authority === "unavailable") return consentUnavailable(c, r, client);
+        if (required && (!authority || authority.phoneKey !== o.platform.phoneKey(r.e164)))
+          return messagePage(c.app, "Connect again", "Return to your agent or text conversation and connect again.", 403);
+        const response = await finishAuthorization(c, { ...r, e164: r.e164 }, client, authority);
         if (current?.setCookie) response.headers.append("set-cookie", current.setCookie);
         return response;
       }
@@ -491,12 +520,19 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     return redirectTo(r.redirectUri, { error: "access_denied", error_description: "Connection cancelled", state: r.state, iss: c.issuer }, 303, { "set-cookie": clearCookie });
   }
 
-  /** Issue only after the browser explicitly approves this request's client and scopes. */
-  async function finishAuthorization(c: Ctx, r: AuthRequest & { e164: string }, client: OAuthClient): Promise<Response> {
+  /** Validate Cloud authority before single-use consumption so outages remain retryable. */
+  async function finishAuthorization(c: Ctx, r: AuthRequest & { e164: string }, client: OAuthClient, authority?: Grant["cloudAuthority"]): Promise<Response> {
     const clearCookie = `${browserCookie(c.app)}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookies(c.app) ? "; Secure" : ""}`;
     const at = now();
     if (r.expiresAt <= at) return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
-    const grant: Grant = { id: `grant_${randomId()}`, clientId: client.id, app: c.app.id, phoneKey: o.platform.phoneKey(r.e164), personId: r.personId, scopes: r.scopes, resource: r.resource, createdAt: at, expiresAt: at + ttl.grantMs, revokedAt: null };
+    const grant: Grant = { id: `${authority ? "grant_cloud_" : "grant_"}${randomId()}`, clientId: client.id, app: c.app.id, phoneKey: o.platform.phoneKey(r.e164), personId: r.personId, scopes: r.scopes, resource: r.resource, createdAt: at, expiresAt: Math.min(at + ttl.grantMs, authority?.expiresAt ?? Infinity), revokedAt: null, ...(authority ? { cloudAuthority: authority } : {}) };
+    const cloudStatus = await cloudGrantCurrent(grant);
+    if (cloudStatus === "unavailable") return consentUnavailable(c, r, client);
+    if (cloudStatus !== "valid") return messagePage(c.app, "Connect again", "This connection is no longer valid. Return to your agent or text conversation and connect again.", 403);
+    const approved = await store.takeConsentRequest(r.id, now());
+    if (!approved?.e164 || approved.e164 !== r.e164 || approved.personId !== r.personId
+      || approved.expiresAt <= now() || grant.expiresAt <= now())
+      return messagePage(c.app, "This page has expired", "Go back to the assistant and connect again.");
     await store.putGrant(grant);
     await linked(grant, true);
     const code = randomToken("ntwc_");
@@ -534,7 +570,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
 
     if (grantType === "authorization_code") {
       const code = form.get("code") ?? "";
-      const ac = code ? await store.takeCode(sha256hex(code), at) : undefined;
+      const ac = code ? await store.getCode(sha256hex(code)) : undefined;
       if (!ac || ac.clientId !== client.id) return bad("invalid_grant");
       if (ac.usedAt !== null) {
         // OAuth 2.1 4.1.3: a second use of a code revokes what the first use issued.
@@ -551,6 +587,20 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       const grant = await store.getGrant(ac.grantId);
       if (!grant || grant.revokedAt !== null || grant.expiresAt <= at) return bad("invalid_grant");
       if (!(await customSlopEligible(c, client, grant.personId, grant.phoneKey))) return bad("invalid_grant");
+      const cloudStatus=await cloudGrantCurrent(grant);
+      if(ac.expiresAt<=now())return bad("invalid_grant");
+      if(cloudStatus==="unavailable")return temporarilyUnavailable();
+      if(cloudStatus!=="valid")return bad("invalid_grant");
+      // The Cloud check may be slow: recheck expiry and atomically consume only after it succeeds.
+      if(ac.expiresAt<=now() || grant.expiresAt<=now())return bad("invalid_grant");
+      const consumed=await store.takeCode(ac.hash,now());
+      if(!consumed)return bad("invalid_grant");
+      if(consumed.usedAt!==null){
+        await revokeGrant(ac.grantId,now());
+        await store.audit({at:now(),kind:"code_replay",clientId:client.id,grantId:ac.grantId,app:c.app.id,detail:"grant revoked"});
+        return bad("invalid_grant");
+      }
+      if(consumed.expiresAt<=now() || grant.expiresAt<=now())return bad("invalid_grant");
       const pair = tokenPair(client, grant, ac.scopes, ac.resource);
       for (const token of pair.tokens) await store.putToken(token);
       await store.audit({ at, kind: "token_issued", clientId: client.id, grantId: grant.id, app: c.app.id, detail: ac.scopes.join(" ") });
@@ -564,12 +614,18 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       const grant = await store.getGrant(t.grantId);
       if (!grant || grant.revokedAt !== null || grant.expiresAt <= at) return bad("invalid_grant");
       if (!(await customSlopEligible(c, client, grant.personId, grant.phoneKey))) return bad("invalid_grant");
+      const cloudStatus=await cloudGrantCurrent(grant);
+      if(t.expiresAt<=now())return bad("invalid_grant");
+      if(cloudStatus==="unavailable")return temporarilyUnavailable();
+      if(cloudStatus!=="valid")return bad("invalid_grant");
       const asked = form.get("scope") === null ? t.scopes : parseScopes(form.get("scope"));
       if (!asked || !asked.every(s => t.scopes.includes(s))) return bad("invalid_scope");
       const res = form.get("resource");
       if (res && canonicalResource(res, c.issuer) !== t.resource) return bad("invalid_target");
+      const refreshedAt=now();
+      if(t.expiresAt<=refreshedAt || grant.expiresAt<=refreshedAt)return bad("invalid_grant");
       const pair = tokenPair(client, grant, asked, t.resource);
-      if (t.rotatedAt !== null || !(await store.rotateRefresh(t.hash, at, pair.tokens, { at, kind: "token_refreshed", clientId: client.id, grantId: grant.id, app: c.app.id, detail: asked.join(" ") }))) {
+      if (t.rotatedAt !== null || !(await store.rotateRefresh(t.hash, refreshedAt, pair.tokens, { at:refreshedAt, kind: "token_refreshed", clientId: client.id, grantId: grant.id, app: c.app.id, detail: asked.join(" ") }))) {
         // A refresh token used twice: someone else has a copy. End the whole grant.
         await revokeGrant(t.grantId, at);
         await store.audit({ at, kind: "refresh_replay", clientId: client.id, grantId: t.grantId, app: c.app.id, detail: "grant revoked" });
@@ -602,7 +658,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
   // ---------------------------------------------------------------- the person's consent records
 
   async function consents(c: Ctx, revokeOne: boolean): Promise<Response> {
-    const who: SignedIn | undefined = o.platform.session ? await o.platform.session(c.app.id, c.req) : undefined;
+    const who = o.platform.session ? await o.platform.session(c.app.id, c.req) : undefined;
+    if(who==="unavailable")return browserUnavailable(c);
     if (!who) return messagePage(c.app, "Sign in first", "Connect this app in your agent and confirm your phone during authorization, then open this page again.", 401);
     let notice: string | undefined;
     if (revokeOne) {
@@ -658,7 +715,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
 
   // ---------------------------------------------------------------- the MCP endpoint
 
-  async function bearer(c: Ctx, resource: string): Promise<Authed | null | "invalid"> {
+  async function bearer(c: Ctx, resource: string): Promise<Authed | null | "invalid" | "unavailable"> {
     const h = c.req.headers.get("authorization");
     if (!h) return null;
     const m = /^Bearer ([A-Za-z0-9\-._~+/]+=*)$/.exec(h);
@@ -669,7 +726,35 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     if (!t || t.kind !== "access" || t.revokedAt !== null || t.expiresAt <= at || t.resource !== resource || t.app !== c.app.id) return "invalid";
     const [grant, client] = await Promise.all([store.getGrant(t.grantId), store.getClient(t.clientId)]);
     if (!grant || grant.revokedAt !== null || grant.expiresAt <= at || !client) return "invalid";
+    const cloudStatus=await cloudGrantCurrent(grant);
+    if(t.expiresAt<=now())return "invalid";
+    if(cloudStatus!=="valid")return cloudStatus;
     return { token: t, grant, client };
+  }
+
+  async function cloudGrantCurrent(grant: Grant): Promise<"valid" | "invalid" | "unavailable"> {
+    if(!grant.id.startsWith("grant_cloud_") && grant.cloudAuthority==null)return "valid";
+    const authority=grant.cloudAuthority;
+    if(!authority || grant.expiresAt<=now() || grant.expiresAt>authority.expiresAt || authority.expiresAt<=now())return "invalid";
+    if(!o.platform.validateCloudGrant)return "unavailable";
+    let status:"valid"|"invalid"|"unavailable";
+    try{status=await o.platform.validateCloudGrant(grant);}catch{status="unavailable";}
+    // A failed transport never extends sealed authority, even if it expired during validation.
+    return grant.expiresAt>now() && authority.expiresAt>now()?status:"invalid";
+  }
+
+  function browserUnavailable(c: Ctx,retryPath?:string): Response {
+    const response=messagePage(c.app,"Please try again","We can’t check your connection right now. Try again shortly, or return to your agent or text conversation.",503,retryPath);
+    response.headers.set("retry-after","5");return response;
+  }
+
+  function consentUnavailable(c:Ctx,r:AuthRequest,client:OAuthClient):Response {
+    const response=consentPage(c.app,r.id,client.name,new URL(r.redirectUri).host,new URL(r.redirectUri).origin,r.scopes,{unavailable:true});
+    response.headers.set("retry-after","5");return response;
+  }
+
+  function temporarilyUnavailable(): Response {
+    return json(503,{error:"temporarily_unavailable",error_description:"Your connection cannot be checked right now. Please try again shortly."},{"retry-after":"5"});
   }
 
   async function mcp(c: Ctx, pathSurface: Surface): Promise<Response> {
@@ -687,6 +772,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
     if (await limited(`mcp:ip:${sha256hex(ipBucket(c.ip))}`, lim.mcpPerIpMinute, 60_000)) return out(429, rpcError(null, -31029, "Too many requests"), { "retry-after": "60" });
 
     const auth = await bearer(c, resource);
+    if (auth === "unavailable")return out(503,rpcError(null,-32603,"Your connection cannot be checked right now. Please try again shortly."),{"retry-after":"5"});
     if (auth === "invalid") return out(401, rpcError(null, -31401, "The access token is not valid here"), { "www-authenticate": challenge(resource, { error: "invalid_token", error_description: "The access token is invalid, expired or for another resource" }) });
     const surface: Surface = pathSurface === "openai" || auth?.client.surface === "openai" ? "openai" : "full";
     if (auth && openAiUnavailable(c, auth.client)) return out(404, rpcError(null, -32601, "Not available"));
@@ -805,6 +891,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         if (!originOk(c) || (req.headers.get("origin") === null && req.headers.get("sec-fetch-site") !== "same-origin") || url.search) return json(403, { error: "not_allowed" });
         if (!["ntwrk", "friends"].includes(c.app.id)) return json(404, { error: "not_found" });
         const who = await o.platform.session?.(c.app.id, req);
+        if(who==="unavailable")return temporarilyUnavailable();
         if (!who) return json(401, { error: "sign_in_required" });
         const key = o.platform.phoneKey(who.e164);
         if (who.personId !== await o.platform.personForKey(key)) return json(403, { error: "not_allowed" });
@@ -830,6 +917,8 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       }
       case "/oauth/authorize":
         return get ? authorizeStart(c) : json(405, { error: "method_not_allowed" });
+      case "/oauth/cloud-return":
+        return get?authorizeCloudReturn(c):json(405,{error:"method_not_allowed"});
       case "/oauth/authorize/phone":
         return authorizeStep(c, "phone");
       case "/oauth/authorize/code":
