@@ -214,7 +214,7 @@ test("staging builds keep the served entry, skills and signed router on configur
     const home = readFileSync(join(directory, "index.html"), "utf8");
     const builtSkill = readFileSync(join(directory, "SKILL.md"), "utf8");
     const version = (Bun.YAML.parse(builtSkill.split("---")[1]!) as { metadata: { version: string } }).metadata.version;
-    const prompt = `Read ${origins.slop}/SKILL.md?version=${encodeURIComponent(version)} and follow it.`;
+    const prompt = `Read ${origins.slop}/SKILL.md and follow it.`;
     expect(home).toContain(`<code data-prompt>${prompt}</code>`);
     expect(home).toContain(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`);
     for (const origin of ["https://chatgpt.com/", "https://claude.ai/new", "https://grok.com/", "https://gemini.google.com/app", "https://www.perplexity.ai/search"]) {
@@ -261,7 +261,7 @@ test("landing pages keep agent onboarding and an accessible phone sign-in link",
   for (const s of SITES) {
     const home = read(s, "index.html");
     const version = (Bun.YAML.parse(read(s, "SKILL.md").split("---")[1]!) as { metadata: { version: string } }).metadata.version;
-    const skillUrl = `https://${s.domain}/SKILL.md?version=${encodeURIComponent(version)}`;
+    const skillUrl = `https://${s.domain}/SKILL.md${s.app === "slop" ? "" : `?version=${encodeURIComponent(version)}`}`;
     const prompt = `Read ${skillUrl} and follow it.`;
     const q = encodeURIComponent(prompt);
     expect(home, s.domain).toContain(`<code data-prompt>${prompt}</code>`);
@@ -278,10 +278,21 @@ test("landing pages keep agent onboarding and an accessible phone sign-in link",
       expect(tile.includes('data-only="desktop"'), `${s.domain} ${a.id}`).toBe(Boolean(a.desktopOnly));
     }
     // Joining by text: the shared line with this app's keyword, which the line routes to this app.
-    expect(row, s.domain).not.toContain("sms:");
+    if (s.app === "slop") {
+      expect(row).toContain(`href="sms:${TEXT_LINE}?body=join%20slop"`);
+      expect(row).toContain('aria-label="Open in iMessage"');
+      expect(home).not.toContain("data-text-message");
+      expect(home).not.toContain("data-copy-message");
+      expect(home).not.toContain("Text Eliza");
+      expect(home).not.toContain("?version=");
+    } else {
+      expect(row, s.domain).not.toContain("sms:");
+    }
     expect(home, s.domain).toContain(`href="sms:${TEXT_LINE}?body=${encodeURIComponent(joinMessageFor(s))}"`);
-    expect(home, s.domain).toContain('data-text-eliza>Text Eliza</a>');
-    expect(home, s.domain).toContain(`<code data-text-message>${joinMessageFor(s)}</code>`);
+    if (s.app !== "slop") {
+      expect(home, s.domain).toContain('data-text-eliza>Text Eliza</a>');
+      expect(home, s.domain).toContain(`<code data-text-message>${joinMessageFor(s)}</code>`);
+    }
     expect(keywordApp(joinMessageFor(s)), s.domain).toBe(s.app);
     expect(keywordApp(keywordFor(s)), s.domain).toBe(s.app);
     // No eyebrow, safety notice, explanation, city or sibling brand; legal pages in the footer.
