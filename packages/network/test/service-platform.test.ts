@@ -18,6 +18,8 @@ import { BlooioAdapter, DryRunAdapter, type ChannelAdapter, type Delivery, type 
 import { enrolledText, LOOKING_FOR_ASK, LOOKING_FOR_ASK_MINOR, NetworkService, WEBHOOK_PATH, type ServiceOptions } from "../service/service.ts";
 import { brandOf, copyFor } from "../src/copy.ts";
 import { START } from "./mini.ts";
+import { queueSink } from "../../notify/src/wiring.ts";
+import { loadSnapshot } from "../service/snapshot.ts";
 
 const T = 300_000;
 const REPO = resolve(import.meta.dir, "../../..");
@@ -227,6 +229,66 @@ describe.skipIf(!pgAvailable)("the service as the platform's channel (Postgres)"
     expect((await memberOf("peon", p))!.age).toBe(16);
   }, T);
 
+  test("a repeated web join records a lower age across existing memberships without joining twice", async () => {
+    await fresh();
+    const clock = new SimClock(START);
+    const { s, otp } = service(clock);
+    const web = site(s, clock, otp);
+    const p = newPhone();
+    await web.login("friends", p);
+    expect((await web.join("friends", 30)).status).toBe(200);
+    await web.login("slop", p);
+    expect((await web.join("slop", 30)).status).toBe(200);
+    const before = await memberOf("slop", p);
+    const consents = await count(sql`select count(*)::int as n from platform.consent_events where e164 = ${p}`);
+    expect((await web.join("slop", 16)).status).toBe(200);
+    expect(await lowestAge(p)).toBe(16);
+    for (const app of ["friends", "slop"] as const) expect((await memberOf(app, p))!.age).toBe(16);
+    expect((await memberOf("slop", p))!.id).toBe(before!.id);
+    expect((await web.join("slop", 30)).status).toBe(200);
+    expect(await lowestAge(p)).toBe(16);
+    expect(await count(sql`select count(*)::int as n from platform.consent_events where e164 = ${p}`)).toBe(consents);
+    // A corrected age below the join minimum must not return a successful membership.
+    const underAge = await web.join("slop", 12);
+    expect(underAge.status).toBe(400);
+    expect(underAge.body).toMatchObject({ error: "under_age" });
+    expect(await lowestAge(p)).toBe(12);
+    expect((await web.join("slop", 30)).status).toBe(400);
+    expect(await count(sql`select count(*)::int as n from platform.consent_events where e164 = ${p}`)).toBe(consents);
+
+  }, T);
+
+  test("a repeated age statement repairs cross-app age propagation after a database failure", async () => {
+    await fresh();
+    const clock = new SimClock(START);
+    const { s, otp } = service(clock);
+    const web = site(s, clock, otp);
+    const p = newPhone();
+    for (const app of ["friends", "slop"] as const) {
+      await web.login(app, p);
+      expect((await web.join(app, 30)).status).toBe(200);
+    }
+    // A database failure after the person age commits must be repairable on retry.
+    await sql.unsafe(`create function network.fail_age_update() returns trigger language plpgsql as $$
+      begin if new.app_id = 'slop' and new.age = 16 then raise exception 'age propagation interrupted'; end if; return new; end $$`);
+    await sql.unsafe(`create trigger fail_age_update before update on network.members for each row execute function network.fail_age_update()`);
+    try {
+      await expect(s.accounts.recordAge(p, await s.accounts.personFor(p), 16)).rejects.toThrow("age propagation interrupted");
+    } finally {
+      await sql.unsafe(`drop trigger fail_age_update on network.members`);
+      await sql.unsafe(`drop function network.fail_age_update()`);
+    }
+    expect(await lowestAge(p)).toBe(16);
+    const staleSlop = (await memberOf("slop", p))!;
+    expect(staleSlop.age).toBe(30);
+    // Matching must already see the canonical minimum, before any retry repairs the app row.
+    const snapshot = await s.runtimeFor("slop")!.scoped(tx => loadSnapshot(tx, clock.now(), { app: "slop" }));
+    expect(snapshot.members.find(m => m.id === staleSlop.id)?.age).toBe(16);
+    // Even a retry with the old age must carry forward the committed lower age.
+    expect((await web.join("slop", 30)).status).toBe(200);
+    for (const app of ["friends", "slop"] as const) expect((await memberOf(app, p))!.age).toBe(16);
+  }, T);
+
   test("SVC-03 an attested adult who says 'I am 12 years old' is held, not deleted: rows stay, other apps treat them as a minor", async () => {
     await fresh();
     const clock = new SimClock(START);
@@ -246,6 +308,37 @@ describe.skipIf(!pgAvailable)("the service as the platform's channel (Postgres)"
       + await count(sql`select count(*)::int as n from network.events where app_id = 'friends' and type = 'age_conflict'`)).toBeGreaterThanOrEqual(1);
     // The other app's member is a minor now (never matched), and still there.
     expect((await memberOf("slop", p))!).toMatchObject({ account_status: "active", age: 13 });
+  }, T);
+
+  test("the service queue rechecks notification expiry before sending", async () => {
+    await fresh();
+    const clock = new SimClock(START);
+    const { s } = service(clock);
+    const phone = newPhone();
+    await text(s, clock, phone, "Rae 30", { app: "friends" });
+    await s.close();
+    const sent: SendRequest[] = [];
+    const { s: restarted } = service(clock, {
+      adapter: (_net, rt) => new BlooioAdapter({
+        from: "+12125550100", clock, app: rt.app.id, liveGate: () => true, log: () => {},
+        provider: { kind: "sim", send: async request => { sent.push(request); return { providerMessageId: request.idempotencyKey, status: "sent" }; } },
+      }),
+    });
+    await restarted.start();
+    const queue = (restarted.runtimeFor("friends")!.adapter as BlooioAdapter).queue;
+    const person = (await restarted.accounts.personFor(phone))!;
+    const input = { personId: person.id, app: "friends", eventType: "plan", subjectId: "expired-plan", urgency: "requested" as const, summary: "Dinner is confirmed." };
+    await restarted.notify!.add({ ...input, expiresAt: clock.now() + MINUTE }, clock.now());
+    const expired = await restarted.notify!.dispatch(clock.now(), queueSink(queue));
+    expect(expired.sent).toHaveLength(1);
+    clock.advance(MINUTE);
+    await restarted.notify!.add({ ...input, subjectId: "current-plan", expiresAt: clock.now() + HOUR }, clock.now());
+    const current = await restarted.notify!.dispatch(clock.now(), queueSink(queue));
+    expect(current.sent).toHaveLength(1);
+    await queue.inbound(phone);
+    await queue.drain();
+    expect(sent.map(r => r.idempotencyKey)).toEqual([`tn:${current.sent[0]!.deliveryId}`]);
+    expect(await queue.statusOf(expired.sent[0]!.deliveryId)).toBe("expired");
   }, T);
 
   test("SVC-04 and SVC-05 after a restart, a waiting reply is sent once; a stale proactive row and an old row expire unsent", async () => {

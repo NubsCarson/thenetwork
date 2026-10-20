@@ -52,7 +52,7 @@ import { activityHints, BOOKING_GAP, PLAN_VENUES, planLedger, statedWindows } fr
 /** A ledger event as the Network builds it: the emitter adds the id and the Clock time. */
 type LedgerInput = CapitalEventInput extends infer E ? (E extends CapitalEventInput ? Omit<E, "t"> : never) : never;
 import type { NetworkStore } from "./store.ts";
-import { HOLD, Trust, type TrustEvent, type TrustLevel, type TrustState } from "./trust.ts";
+import { HOLD, Trust, type TrustLevel, type TrustState } from "./trust.ts";
 import type { AppHooks, AppTag, HookOpp } from "./apphooks.ts";
 import { isSeatId, postingFromDraft, postingFromFacts, postingProblem, postingsOf, POSTING_COPY, readPostingText, seatIdOf, seatOwnerOf, SEAT_COPY, type JobPosting, type PostingDraft } from "./jobs.ts";
 import { checkInReport, reportKindOf, URGENT_REPORTS, type ReportKind, type SafetyReport } from "./reports.ts";
@@ -2986,7 +2986,7 @@ export class ConsentNetwork implements NetworkUnderTest {
     } else if (this.overBudget(m)) return this.planDefer(o, id, "cap", now);
     // A crew session's extra seats (organizing reach) go to people outside the crew: they get the plain plan probe.
     const inCrew = !o.plan.crewId || !!this.crews.find(c => c.id === o.plan!.crewId)?.members.includes(id);
-    const text = plans.buildPlanProbe(this.planWorld(now), inCrew ? o.plan : { ...o.plan, crewId: undefined }, id, now, NY);
+    const text = plans.buildPlanProbe(this.planWorld(now), inCrew ? o.plan : { ...o.plan, crewId: undefined }, id, NY);
     if (!text) { this.refuse(id, "probe", "plan_copy"); return this.planAnswer(o, id, false, true); }
     const a = plans.activityById.get(o.plan.activityId)!;
     const res = this.send(m, text, {

@@ -16,6 +16,8 @@
 // (sim WorldOptions.plans); default on when the Network runs plans. --capital: an NC ledger records
 // every event and the Network reads the levers from it (default: events are counted, levers off).
 // Every arm reports the judge's scores (computeMetrics) too, so the Observatory lab can call this.
+import { gini } from "@thenetwork/core";
+export { gini };
 import { parseArgs } from "node:util";
 import { DAY } from "@thenetwork/core";
 import type { RunRecord } from "@thenetwork/core";
@@ -27,7 +29,6 @@ import { createEngine } from "../../sim/src/engineAdapter.ts";
 import { friendFactory } from "./growth.ts";
 import { ConsentNetwork, type NetworkOptions } from "../src/network.ts";
 import { capitalWiring } from "../src/capital.ts";
-import { OUTREACH } from "../src/outreach.ts";
 import { ParaphraseAgent } from "./paraphrase.ts";
 
 export interface ArmResult {
@@ -70,12 +71,6 @@ export interface ArmResult {
   paraphrase?: boolean;
 }
 
-/** Gini coefficient of non-negative counts (0 = equal, 1 = one member has everything). */
-export function gini(xs: readonly number[]): number {
-  const v = [...xs].sort((a, b) => a - b), n = v.length, sum = v.reduce((a, b) => a + b, 0);
-  if (!n || !sum) return 0;
-  return v.reduce((acc, x, i) => acc + (2 * (i + 1) - n - 1) * x, 0) / (n * sum);
-}
 
 /** Fairness fields (NET-41): from per-member proposal and meeting counts over the population. */
 export function fairnessOf(population: readonly string[], proposals: ReadonlyMap<string, number>, meetings: ReadonlyMap<string, number>): NonNullable<ArmResult["fairness"]> {
