@@ -1,5 +1,6 @@
 """One exact retained-image boot on a disposable hosted runner; no rebuild or live data."""
 from pathlib import Path
+from oci_to_docker import convert
 import hashlib,json,os,re,subprocess,threading,time
 ROOT=Path(__file__).resolve().parent
 OUT=ROOT/'receipts';CONTROL=ROOT/'control'
@@ -93,9 +94,18 @@ outcome={'passed':False,'productionActions':0,'realData':0,'providerCalls':0,'co
 try:
     archive=ROOT/'artifact/backend.oci.tar';assert archive.stat().st_size==75333120
     with archive.open('rb') as f:assert hashlib.file_digest(f,'sha256').hexdigest()=='965f59631aec823974bf712bdad400d4e75b9b8e1af9c6fc94b8b5312bc788c9'
-    run(['docker','version']);run(['docker','load','--input',str(archive)],120)
+    run(['docker','version'])
+    expected=json.loads((ROOT/'EXPECTED-IMAGE.json').read_text())
+    def conversion_guard():
+        assert time.monotonic()<work_end,'CONVERSION_FINITE_DEADLINE'
+    free=os.statvfs(ROOT);assert free.f_bavail*free.f_frsize>=6442450944,'HOSTED_IMPORT_FOOTPRINT_FLOOR_6GIB'
+    compatible,conversionReceipt=convert(archive,ROOT/'converted-image',expected,conversion_guard)
+    save('SAME-IMAGE-REPRESENTATION.json',conversionReceipt)
+    free=os.statvfs(ROOT);assert free.f_bavail*free.f_frsize>=2147483648+201326592+536870912+1073741824+612368384,'REMAINING_LOADER_IMAGE_PG_WRITE_FLOOR'
+    run(['docker','load','--input',str(compatible)],120)
     image=json.loads(run(['docker','image','inspect',CONFIG])[0])[0]
     assert image['Id']==CONFIG and image['Architecture']=='amd64' and image['Os']=='linux'
+    assert image['RootFS']['Layers']==expected['diffIDs'],'LOADED_ORDERED_RAW_DIFFIDS'
     assert image['Config']['User']=='bun' and image['Config']['Cmd']==['bun','run','deploy/backend/server.ts'];save('loaded-image.json',image)
     run(['docker','pull',PG],120)
     # Resolve exact pull result to image ID; bind inspected digest rather than assume ID convention.

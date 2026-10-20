@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - name: Verify exact reviewed helper bytes
         env:
-          EXPECTED_PINS_SHA256: e8b63cd456ee1d2bcc7765af11c60b388c3e0a8b941463a8eeffb78a65474637
+          EXPECTED_PINS_SHA256: 77aaa333f44c78a3af2e34ceb1e66a82838c41eba87e4513c4dde58d6e0b0bf6
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -29,7 +29,7 @@ jobs:
           data=(root/'PINS.json').read_bytes()
           assert hashlib.sha256(data).hexdigest()==os.environ['EXPECTED_PINS_SHA256']
           pins=json.loads(data)
-          assert set(pins)=={'qualify.py','setup.ts','probe.ts'}
+          assert set(pins)=={'qualify.py','setup.ts','probe.ts','oci_to_docker.py','EXPECTED-IMAGE.json'}
           for name,pin in pins.items():
               path=root/name
               assert path.is_file() and not path.is_symlink()
