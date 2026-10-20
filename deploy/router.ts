@@ -1,12 +1,13 @@
 // The Worker in front of each site: a Cloudflare Pages advanced-mode _worker.js (founder decision 8),
 // built by sites/sites.ts. It forwards the backend paths to the one shared backend and serves every
-// other path from the site's static files (env.ASSETS).
+// other active path from the site's static files (env.ASSETS).
 //
 //   /api, /api/*, /mcp, /mcp/*, /oauth/*, /.well-known/oauth-*  -> env.BACKEND_ORIGIN (same path and query)
+//   /settings, /settings/, /settings.html                     -> uncached 404
 //   anything else                                               -> env.ASSETS (dist/, with _headers)
 //
 // dist/_routes.json lists the same paths, so Cloudflare runs this Worker only for them
-// (keep the two lists the same; the router test that checked it was removed on 2026-10-08).
+// (the build and router checks keep the route list aligned).
 //
 // Proxy headers. The backend sees the Worker, not the visitor, so the Worker tells it who the visitor
 // is, and signs what it says. There is one contract: packages/platform/src/proxy.ts (signProxyHeaders,
@@ -33,10 +34,18 @@ export const UNKNOWN_IP = "unknown";
 /** The largest body the router forwards (the backend's MAX_PUBLIC_BODY_BYTES). */
 export const MAX_BODY_BYTES = 9 * 1024 * 1024;
 
-/** The paths that run the Worker: Cloudflare Pages _routes.json "include" (sites/sites.ts routesFile). */
-export const RUN_WORKER_FIRST = ["/api", "/api/*", "/mcp", "/mcp/*", "/oauth/*", "/.well-known/oauth-*"];
+/** Retired account pages must never fall through to the static asset cache. */
+export const RETIRED_SITE_PATHS = ["/settings", "/settings/", "/settings.html"];
+/** Cloudflare Pages _routes.json "include" (sites/sites.ts routesFile). */
+export const RUN_WORKER_FIRST = [...RETIRED_SITE_PATHS, "/api", "/api/*", "/mcp", "/mcp/*", "/oauth/*", "/.well-known/oauth-*"];
 
-/** True for a path that belongs to the shared backend. Same rule as RUN_WORKER_FIRST. */
+/** Reject removed account pages before looking up static assets, including stale cached copies. */
+export function retiredSitePage(req: Request): Response | null {
+  if (!RETIRED_SITE_PATHS.includes(new URL(req.url).pathname)) return null;
+  return new Response(req.method === "HEAD" ? null : "Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+}
+
+/** True for a path that belongs to the shared backend. */
 export function isBackendPath(pathname: string): boolean {
   return (
     pathname === "/api" || pathname.startsWith("/api/") ||
@@ -71,6 +80,8 @@ const jsonError = (status: number, error: string) =>
   new Response(JSON.stringify({ ok: false, error }), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 
 export async function handle(req: Request, env: Env, fetchFn: typeof fetch = fetch, now: () => number = Date.now): Promise<Response> {
+  const retired = retiredSitePage(req);
+  if (retired) return retired;
   const url = new URL(req.url);
   if (!isBackendPath(url.pathname)) return env.ASSETS.fetch(req);
   const secret = env.PLATFORM_PROXY_SECRET;

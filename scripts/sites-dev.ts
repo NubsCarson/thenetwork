@@ -11,7 +11,7 @@
 // pages show an inline error. Nothing here sends a text message or calls a paid service.
 import { existsSync, statSync, watch } from "node:fs";
 import { join, normalize, sep } from "node:path";
-import { handle as routerHandle, isBackendPath, isProxyHeader } from "../deploy/router.ts";
+import { handle as routerHandle, isBackendPath, isProxyHeader, retiredSitePage } from "../deploy/router.ts";
 import { SECURITY_HEADERS, SITES, buildSite, site as findSite, type Site } from "../sites/sites.ts";
 
 const HOP = ["host", "connection", "keep-alive", "transfer-encoding", "upgrade", "content-length", "accept-encoding"];
@@ -93,6 +93,8 @@ export function serveSite(s: Site, opts: DevOptions) {
     port: opts.port,
     hostname: "127.0.0.1",
     async fetch(req) {
+      const retired = retiredSitePage(req);
+      if (retired) return retired;
       const url = new URL(req.url);
       if (isBackendPath(url.pathname)) return proxy(req, s, opts.apiOrigin, secret || undefined, opts.now);
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405 });

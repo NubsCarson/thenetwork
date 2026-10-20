@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { PROXY_HEADERS, proxySignature, verifyProxyHeaders } from "../packages/platform/src/proxy.ts";
-import { handle, isBackendPath, MAX_BODY_BYTES, RUN_WORKER_FIRST, UNKNOWN_IP, type Env } from "./router.ts";
+import { handle, isBackendPath, MAX_BODY_BYTES, RETIRED_SITE_PATHS, RUN_WORKER_FIRST, UNKNOWN_IP, type Env } from "./router.ts";
 
 const SECRET = "test-proxy-secret";
 const NOW = Date.UTC(2026, 9, 8, 15, 0, 0);
@@ -60,7 +60,7 @@ describe("which paths reach the backend", () => {
     expect(a).toEqual([p]);
   });
 
-  test("every site is a Pages project whose build runs this router only on the backend paths (founder decision 8)", async () => {
+  test("every site is a Pages project whose build runs this router on backend paths and retired account pages", async () => {
     const { SITES, routesFile } = await import("../sites/sites.ts");
     expect(JSON.parse(routesFile())).toEqual({ version: 1, include: RUN_WORKER_FIRST, exclude: [] });
     // The built _worker.js exports only the default handler (workerd refuses any other named export:
@@ -80,10 +80,10 @@ describe("which paths reach the backend", () => {
       expect(toml.vars.BACKEND_ORIGIN, s.domain).toBe("https://api.ntwrk.party");
       expect("PLATFORM_PROXY_SECRET" in toml.vars, `${s.domain} must not hold the secret`).toBe(false);
     }
-    // Each pattern, read as Cloudflare does (trailing * = prefix), matches isBackendPath.
+    // Backend patterns forward; retired account routes must run the Worker without forwarding.
     for (const pat of RUN_WORKER_FIRST) {
       const sample = pat.endsWith("*") ? pat.slice(0, -1) + "x" : pat;
-      expect(isBackendPath(sample), pat).toBe(true);
+      expect(isBackendPath(sample), pat).toBe(!RETIRED_SITE_PATHS.includes(pat));
     }
   });
 });

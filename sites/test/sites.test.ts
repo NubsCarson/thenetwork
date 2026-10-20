@@ -4,7 +4,7 @@
 // as they are (_headers, SKILL.md, robots.txt, .well-known), same-origin scripts, and the dev proxy.
 //   bun test sites
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -388,6 +388,25 @@ test("toE164 accepts US numbers only", () => {
   expect(toE164("+44 20 7946 0958")).toBeNull();
   expect(toE164("012 555 0123")).toBeNull();
   expect(toE164("555-0123")).toBeNull();
+});
+
+test("retired Settings URLs refuse an old static account page over HTTP", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "retired-settings-"));
+  writeFileSync(join(dir, "settings.html"), '<html><main data-settings>Old account page</main></html>');
+  const server = serveSite(SITES[0]!, { port: 0, apiOrigin: "http://127.0.0.1:9", outdir: dir });
+  try {
+    for (const path of ["/settings", "/settings/", "/settings.html", "/settings?source=old-link"]) {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await fetch(`http://127.0.0.1:${server.port}${path}`, { method, redirect: "manual" });
+        expect(response.status, `${method} ${path}`).toBe(404);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(await response.text()).not.toContain("data-settings");
+      }
+    }
+  } finally {
+    server.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("dev server", () => {
