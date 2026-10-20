@@ -398,7 +398,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
       }
       if (signedIn.setCookie) cookieOut.push(signedIn.setCookie);
       await store.updateAuthRequest(r.id, { e164: signedIn.e164, personId: signedIn.personId, step: "consent" });
-      res = consentPage(c.app, r.id, client.name, redirectHost, r.scopes);
+      res = consentPage(c.app, r.id, client.name, redirectHost, new URL(r.redirectUri).origin, r.scopes);
     } else {
       res = phonePage(c.app, r.id, client.name, redirectHost, { turnstileSiteKey: o.turnstile?.siteKey });
     }
@@ -458,7 +458,7 @@ export function createMcpHandler(o: McpHandlerOptions): McpHandler {
         return res;
       }
       await store.updateAuthRequest(r.id, { personId: who.personId, step: "consent" });
-      const res = consentPage(c.app, r.id, client.name, redirectHost, r.scopes);
+      const res = consentPage(c.app, r.id, client.name, redirectHost, new URL(r.redirectUri).origin, r.scopes);
       const site = o.platform.createSession ? await o.platform.createSession(c.app.id, { e164: r.e164, personId: who.personId }) : undefined;
       if (site) res.headers.append("set-cookie", site);
       return res;

@@ -510,6 +510,7 @@ describe("explicit client approval boundary", () => {
     expect(request.response.headers.has("location")).toBe(false);
     expect(request.html).toContain('/oauth/authorize/consent');
     expect(request.html).toContain('client.example');
+    expect(request.response.headers.get("content-security-policy")).toContain("form-action 'self' https://client.example");
     expect(request.html).toContain('&lt;img');
     expect(request.html).not.toContain('<img src=x');
     expect(request.response.headers.get("cache-control")).toBe("no-store");

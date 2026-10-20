@@ -74,14 +74,14 @@ const SCOPE_TEXT: Record<Scope, string> = {
 };
 
 /** One pending OAuth connection, not an account page or a sign-in destination. */
-export function consentPage(app: McpApp, rid: string, clientName: string | null, redirectHost: string, scopes: Scope[]) {
+export function consentPage(app: McpApp, rid: string, clientName: string | null, redirectHost: string, redirectOrigin: string, scopes: Scope[]) {
   return page(app, "Allow access", `<h1>Allow this assistant?</h1>
 <p><strong>${esc(clientName ?? "An unnamed assistant")}</strong> (the name it provided)</p>
 <p class="muted">Return to ${esc(redirectHost)}.</p>
 <div class="box"><p>It will be able to:</p><ul>${scopes.map(s => `<li>${esc(SCOPE_TEXT[s])}</li>`).join("")}</ul></div>
 <form method="post" action="/oauth/authorize/consent">${hidden(rid)}
 <div class="row"><button name="decision" value="approve">Allow</button><button class="secondary" name="decision" value="deny">Don't allow</button></div>
-</form>`);
+</form>`, { formTargets: [redirectOrigin] });
 }
 
 export function messagePage(app: McpApp, title: string, text: string, status = 400) {
