@@ -278,22 +278,14 @@ test("landing pages keep agent onboarding and an accessible phone sign-in link",
       expect(tile.includes('data-only="desktop"'), `${s.domain} ${a.id}`).toBe(Boolean(a.desktopOnly));
     }
     // Joining by text: the shared line with this app's keyword, which the line routes to this app.
-    if (s.app === "slop") {
-      expect(row).not.toContain("sms:");
-      expect(home).toContain("Use in iMessage");
-      expect(home).toContain("data-text-eliza");
-      expect(home).not.toContain("data-text-message");
-      expect(home).not.toContain("data-copy-message");
-      expect(home).not.toContain("Text Eliza");
-      expect(home).not.toContain("?version=");
-    } else {
-      expect(row, s.domain).not.toContain("sms:");
-    }
+    expect(row, s.domain).not.toContain("sms:");
+    expect(home, s.domain).toContain("Use in iMessage");
+    expect(home, s.domain).toContain("data-text-eliza");
+    expect(home, s.domain).not.toContain("data-text-message");
+    expect(home, s.domain).not.toContain("data-copy-message");
+    expect(home, s.domain).not.toContain("Text Eliza");
     expect(home, s.domain).toContain(`href="sms:${TEXT_LINE}?body=${encodeURIComponent(joinMessageFor(s))}"`);
-    if (s.app !== "slop") {
-      expect(home, s.domain).toContain('data-text-eliza>Text Eliza</a>');
-      expect(home, s.domain).toContain(`<code data-text-message>${joinMessageFor(s)}</code>`);
-    }
+    if (s.app === "slop") expect(home).not.toContain("?version=");
     expect(keywordApp(joinMessageFor(s)), s.domain).toBe(s.app);
     expect(keywordApp(keywordFor(s)), s.domain).toBe(s.app);
     // No eyebrow, safety notice, explanation, city or sibling brand; legal pages in the footer.
