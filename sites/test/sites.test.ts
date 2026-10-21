@@ -279,8 +279,9 @@ test("landing pages keep agent onboarding and an accessible phone sign-in link",
     }
     // Joining by text: the shared line with this app's keyword, which the line routes to this app.
     if (s.app === "slop") {
-      expect(row).toContain(`href="sms:${TEXT_LINE}?body=join%20slop"`);
-      expect(row).toContain('aria-label="Open in iMessage"');
+      expect(row).not.toContain("sms:");
+      expect(home).toContain("Use in iMessage");
+      expect(home).toContain("data-text-eliza");
       expect(home).not.toContain("data-text-message");
       expect(home).not.toContain("data-copy-message");
       expect(home).not.toContain("Text Eliza");

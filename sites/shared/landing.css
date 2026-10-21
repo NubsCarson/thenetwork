@@ -69,7 +69,7 @@ body.landing {
 }
 @keyframes l-rise { from { opacity: 0.001; transform: translateY(10px); } }
 .landing .l-text-entry { margin-top: 28px; }
-.landing .l-text-button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 24px; border-radius: 12px; background: var(--l-ink); color: var(--l-bg); font-size: 16px; font-weight: 650; text-decoration: none; }
+.landing .l-text-button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 0 24px; border-radius: 12px; background: var(--l-ink); color: var(--l-bg); font-size: 16px; font-weight: 650; text-decoration: none; }
 .landing .l-text-message { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 10px 0 0; color: var(--l-muted); font-size: 13px; }
 .landing .l-text-message code { user-select: all; -webkit-user-select: all; }
 .landing .l-text-message button { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--l-ink); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
@@ -84,3 +84,5 @@ body.landing {
 
 /* iMessage stays white with a black icon in either color scheme. */
 .landing .l-agent.l-imessage, .landing .l-agent.l-imessage:hover { background: #fff; color: #000; border-color: #ddd; }
+
+.landing .l-text-button svg { width: 24px; height: 24px; flex: none; }

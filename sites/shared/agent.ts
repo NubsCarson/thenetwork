@@ -4,11 +4,12 @@
 // JavaScript the links still open the agent and the prompt stays selectable.
 
 /** Copies the prompt. No clipboard permission: selects the text so the person can copy it by hand. */
-async function copy(code: HTMLElement): Promise<boolean> {
+async function copy(code: HTMLElement | string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(code.textContent ?? "");
+    await navigator.clipboard.writeText(typeof code === "string" ? code : code.textContent ?? "");
     return true;
   } catch {
+    if (typeof code === "string") return false;
     const range = document.createRange();
     range.selectNodeContents(code);
     const sel = window.getSelection();
@@ -48,9 +49,33 @@ export function mountAgents(root: Document = document): void {
     copyMessage.addEventListener("click", async () => {
       copyMessage.textContent = (await copy(textMessage)) ? "Copied" : "Selected: press copy";
     });
-    root.querySelector<HTMLAnchorElement>("[data-text-eliza]")?.addEventListener("click", async () => {
-      const copied = await copy(textMessage);
-      say(copied ? "If Messages opens without the text, paste the copied message." : "If Messages opens without the text, copy the message shown here.");
+  }
+
+  const textLink = root.querySelector<HTMLAnchorElement>("[data-text-eliza]");
+  if (textLink) {
+    textLink.addEventListener("click", (event) => {
+      const url = new URL(textLink.href);
+      const message = url.searchParams.get("body") ?? "";
+      // Start within the click: clipboard permission may expire after an app-opening timeout.
+      const copied = copy(message);
+      const fallback = async () => say(await copied
+        ? `Message copied. Text it to ${url.pathname} if iMessage did not open.`
+        : `Text “${message}” to ${url.pathname}.`);
+      if (!d.messages) {
+        event.preventDefault();
+        void fallback();
+        return;
+      }
+      let opened = false;
+      const leave = () => { opened = true; };
+      const visibility = () => { if (root.visibilityState === "hidden") leave(); };
+      window.addEventListener("pagehide", leave, { once: true });
+      root.addEventListener("visibilitychange", visibility);
+      window.setTimeout(() => {
+        window.removeEventListener("pagehide", leave);
+        root.removeEventListener("visibilitychange", visibility);
+        if (!opened) void fallback();
+      }, 1500);
     });
   }
 
