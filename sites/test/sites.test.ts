@@ -304,6 +304,18 @@ test("landing pages keep agent onboarding and an accessible phone sign-in link",
   }
 });
 
+test("Muse copies the prompt without opening an unrelated video-hosting site", () => {
+  for (const s of SITES) {
+    const home = read(s, "index.html");
+    const tile = home.match(/<button[^>]*data-agent="muse"[^>]*>/)?.[0];
+    expect(tile, s.domain).toBeDefined();
+    expect(tile, s.domain).toContain('aria-label="Copy the prompt for Muse"');
+    expect(tile, s.domain).toContain('data-toast="Copied. Paste it into Muse."');
+    expect(home, s.domain).not.toMatch(/<a[^>]*data-agent="muse"/);
+    expect(home, s.domain).not.toContain("https://muse.ai/");
+  }
+});
+
 test("the page script tells a phone from a desktop (iPadOS reports itself as a Mac)", () => {
   const ua = { iphone: "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X)", android: "Mozilla/5.0 (Linux; Android 16; Pixel 10)", mac: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", windows: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
   expect(device({ userAgent: ua.iphone, maxTouchPoints: 5 })).toEqual({ mobile: true, messages: true });

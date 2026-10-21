@@ -27,7 +27,8 @@ export const AGENTS: Agent[] = [
   { id: "chatgpt", name: "ChatGPT", logo: "openai", href: "https://chatgpt.com/?q={q}", toast: "Opening ChatGPT. The prompt is copied too." },
   { id: "claude", name: "Claude", logo: "claude", href: "https://claude.ai/new?q={q}", toast: "Opening Claude. The prompt is copied too." },
   { id: "grok", name: "Grok", logo: "grok", href: "https://grok.com/?q={q}", toast: "Opening Grok. The prompt is copied too." },
-  { id: "muse", name: "Muse", logo: "muse", href: "https://muse.ai/", toast: "Copied. Paste it into Muse." },
+  // muse.ai is a video host; keep the copy fallback until the agent's URL is confirmed.
+  { id: "muse", name: "Muse", logo: "muse", toast: "Copied. Paste it into Muse." },
   { id: "gemini", name: "Gemini", logo: "gemini", href: "https://gemini.google.com/app?q={q}", toast: "Copied. Paste it into Gemini." },
   { id: "perplexity", name: "Perplexity", logo: "perplexity", href: "https://www.perplexity.ai/search?q={q}", toast: "Opening Perplexity. The prompt is copied too." },
   { id: "cursor", name: "Cursor", logo: "cursor", href: "https://cursor.com/link/prompt?text={q}", toast: "Opening Cursor. The prompt is copied too.", desktopOnly: true },
