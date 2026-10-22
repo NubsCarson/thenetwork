@@ -451,11 +451,18 @@ describe.skipIf(!pgAvailable)("the service as the platform's channel (Postgres)"
     expect(await memberOf("friends", p)).toBeDefined();
     await text(s, clock, p, "STOP", { app: "friends" });
     expect(await consentOf(p, "friends")).toBe("opted_out");
+    // Cross the fixed-window boundary one minute after the first hint.
+    const window = 30 * DAY;
+    const boundary = (Math.floor(clock.now() / window) + 1) * window;
+    clock.advance(boundary - clock.now() - 1000);
+    const firstHintAt = clock.now();
     await text(s, clock, p, "hi", { app: "friends" });
     await text(s, clock, p, "hello?", { app: "friends" });
     expect(hint(p).map(d => d.body)).toEqual([APPS.friends.brand.stoppedHint]);
-    // 30 days later one more hint.
-    clock.advance(31 * DAY);
+    // A refused attempt must not extend the interval from the last hint.
+    clock.advance(firstHintAt + window - clock.now() - 1);
+    await text(s, clock, p, "still waiting", { app: "friends" });
+    expect(hint(p)).toHaveLength(1);
     await text(s, clock, p, "hey", { app: "friends" });
     expect(hint(p)).toHaveLength(2);
     // A stranger: STOP before joining, then "hi" twice: one hint; START opts them back in.

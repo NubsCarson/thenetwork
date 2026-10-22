@@ -1150,8 +1150,8 @@ export class NetworkService implements RuntimeHost {
     const key = this.phoneKey(e164);
     if (resolveConsent(await this.people.lastConsent(e164, app.id)) !== "opted_out" || (await this.people.isSuppressed(key))) return;
     if (await this.people.isBanned(key, (await this.people.findPhone(e164))?.personId ?? null)) return;
-    const { count } = await this.people.hit(`stop_hint:${app.id}:${key}`, 30 * DAY, this.clock.now());
-    if (count === 1) await this.direct(rt, ev.from, app.brand.stoppedHint, `sys:${rowId}`, "compliance");
+    const { ok } = await this.people.hit(`stop_hint:${app.id}:${key}`, 30 * DAY, this.clock.now(), { minGapMs: 30 * DAY });
+    if (ok) await this.direct(rt, ev.from, app.brand.stoppedHint, `sys:${rowId}`, "compliance");
   }
 
   private noticeKey(e164: string) { return keyedHash(this.hashKey, `eliza_notice:${e164}`); }
