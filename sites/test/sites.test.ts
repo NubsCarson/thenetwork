@@ -43,7 +43,8 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe.each(SITES)("$domain", (s) => {
   test("every required page is built", () => {
-    const need = ["index.html", "join.html", "privacy.html", "terms.html", "404.html"];
+    const need = ["index.html", "privacy.html", "terms.html", "404.html", ...(s.app === "peon" ? ["join.html"] : [])];
+    if (s.app !== "peon") expect(htmlFiles(s)).not.toContain("join.html");
     expect(htmlFiles(s)).not.toContain("sms-terms.html");
 
     expect(htmlFiles(s)).toEqual(expect.arrayContaining(need));
@@ -68,7 +69,7 @@ describe.each(SITES)("$domain", (s) => {
   });
 
   test("the join page stores the consent wording that the SMS terms quote", () => {
-    const wording = consentWording(read(s, "join.html"));
+    const wording = s.app === "peon" ? consentWording(read(s, "join.html")) : APPS[s.app].consent.text;
     expect(wording).toContain("Reply STOP");
     expect(wording).toContain("HELP");
     expect(wording).toContain("Message and data rates may apply");
@@ -81,22 +82,24 @@ describe.each(SITES)("$domain", (s) => {
   });
 
   test("the join page's consent wording is the platform's canonical text for this app", () => {
-    expect(consentWording(read(s, "join.html"))).toBe(APPS[s.app].consent.text);
+    if (s.app === "peon") expect(consentWording(read(s, "join.html"))).toBe(APPS[s.app].consent.text);
+    else { expect(read(s, "SKILL.md")).toContain("consent.text"); expect(read(s, "SKILL.md")).toContain("explicit approval"); }
   });
 
   test("ages on every page equal the platform registry: 13 to join, 18 to be matched", () => {
     const app = APPS[s.app];
     expect(app.minJoinAge).toBe(13);
     expect(app.minMatchAge).toBe(18);
-    expect(read(s, "join.html")).toContain(`data-min-age="${app.minJoinAge}"`);
+    if (s.app === "peon") expect(read(s, "join.html")).toContain(`data-min-age="${app.minJoinAge}"`);
     for (const f of htmlFiles(s)) {
       for (const m of text(read(s, f)).matchAll(/\b(\d{1,2}) (?:or|and) older\b/g)) {
         expect([app.minJoinAge, app.minMatchAge], `${f}: "${m[0]}"`).toContain(Number(m[1]));
       }
     }
     // Plain words for minors on the join page: they can join, and they are never matched.
-    expect(text(read(s, "join.html"))).toMatch(/13(?: or older|\s*\+)/);
-    expect(text(read(s, "join.html"))).toMatch(/18(?: and older|\s*\+)/);
+    const ageText = text(read(s, s.app === "peon" ? "join.html" : "SKILL.md"));
+    expect(ageText).toMatch(/13(?: or older|\s*\+)/);
+    expect(ageText).toMatch(/18(?: and older|\s*\+)/);
   });
 
   test("STOP stops every app; 'leave <app>' stops one (PRD 40.3). No page says STOP ALL", () => {
@@ -152,12 +155,15 @@ describe.each(SITES)("$domain", (s) => {
         expect(skill).toContain("/api/me/export");
         expect(skill).toContain("session.cookies");
         expect(skill).not.toContain("In ChatGPT, add ");
+        expect(skill).not.toContain(`https://${s.domain}/join`);
+        expect(skill).toContain("Signup and sign-in happen only in the person's current agent conversation");
+        expect(skill).toContain("they must never have to send a text to receive a code");
       } else if (s.app !== "slop") expect(skill).toContain(`In ChatGPT, add https://${s.domain}/mcp/openai instead`);
     }
   });
 
   test("the slop.date safety notice is information, never a step that blocks joining", () => {
-    const join = read(s, "join.html");
+    const join = read(s, s.app === "peon" ? "join.html" : "SKILL.md");
     expect(join).not.toContain("data-first-step");
     expect(join).not.toContain('data-step="safety"');
     expect(join).not.toContain("ack-safety");
@@ -193,7 +199,7 @@ describe.each(SITES)("$domain", (s) => {
   });
 
   test("the phone step on join carries the Turnstile slot and the site key meta", () => {
-    for (const f of ["join.html"]) {
+    for (const f of s.app === "peon" ? ["join.html"] : []) {
       const html = read(s, f);
       expect(html, f).toContain('<meta name="turnstile-sitekey" content="">');
       expect(html.indexOf("data-turnstile"), f).toBeGreaterThan(html.indexOf('data-form="phone"'));
@@ -243,12 +249,12 @@ test("staging builds keep the served entry, skills and signed router on configur
     const skill = await (await fetch(`${base}/SKILL.md`)).text();
     expect(skill).toContain(`${origins.slop}/`);
     expect(skill).toContain("/api/auth/otp/verify");
-    for (const path of ["join", "privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
+    for (const path of ["privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
     expect(skill).toContain("Email: help@ntwrk.party");
     expect(skill).not.toContain("https://slop.date");
     const index = await (await fetch(`${base}/.well-known/agent-skills/index.json`)).json() as { skills: { url: string; digest: string }[] };
     expect(await (await fetch(base + index.skills[0]!.url)).text()).toBe(skill);
-    expect(readFileSync(join(hubDirectory, "SKILL.md"), "utf8")).toContain(`${origins.ntwrk}/join`);
+    expect(readFileSync(join(hubDirectory, "SKILL.md"), "utf8")).toContain(`${origins.ntwrk}/`);
     for (const path of ["/api/app", "/mcp", "/oauth/authorize", "/.well-known/oauth-protected-resource/mcp"]) {
       expect((await (await fetch(base + path)).json()).id).toBe("slop");
     }
@@ -389,10 +395,9 @@ test("no 'buddies' identifier remains in sites, scripts, deploy or CI (renamed f
 
 test("ntwrk.party join page says joining is by invitation", () => {
   const ntwrk = SITES.find((s) => s.app === "ntwrk")!;
-  const join = read(ntwrk, "join.html");
-  expect(join).toContain('data-join-mode="invite"');
-  // The invite explanation is the visible default, so it shows without JavaScript.
-  expect(join).toMatch(/<section data-step="invite">/);
+  expect(htmlFiles(ntwrk)).not.toContain("join.html");
+  expect(read(ntwrk, "SKILL.md")).toContain("invitation");
+  expect(read(ntwrk, "SKILL.md")).toContain("`canJoin:false`");
 });
 
 test("toE164 accepts US numbers only", () => {
@@ -529,4 +534,23 @@ describe("dev server", () => {
     for (const path of ["no-such-page", "safety", "guidelines", "support"]) expect((await fetch(`http://127.0.0.1:${up.port}/${path}`)).status).toBe(404);
     expect((await fetch(`http://127.0.0.1:${up.port}/..%2f..%2fsites.ts`)).status).toBe(404);
   });
+});
+
+
+test("retired Join URLs return to the agent landing and never expose a cached form over HTTP", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "retired-join-"));
+  writeFileSync(join(dir, "join.html"), '<html><form data-retired-signup>Old form</form></html>');
+  try {
+    for (const app of ["friends", "slop", "ntwrk"]) {
+      const server = serveSite(SITES.find(s => s.app === app)!, {port:0, apiOrigin:"http://127.0.0.1:9", outdir:dir});
+      try {
+        for (const path of ["/join", "/join/", "/join.html", "/join?via=agent"]) {
+          const response = await fetch(`http://127.0.0.1:${server.port}${path}`, {redirect:"manual"});
+          expect(response.status).toBe(302); expect(response.headers.get("location")).toBe("/");
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(await response.text()).not.toContain("data-retired-signup");
+        }
+      } finally {server.stop(true);}
+    }
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });

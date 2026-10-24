@@ -522,7 +522,8 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
 
     test("public signup instructions match the invite-only Network page and keep open apps usable", async () => {
       const page = await (await st.site("ntwrk", "/join?via=agent")).text();
-      expect(page).toContain("You need an invite.");
+      expect(page).not.toContain('data-form="phone"');
+      expect(page).not.toContain('data-form="profile"');
       const app = await (await st.site("ntwrk", "/api/app")).json() as { joinMode: string };
       expect(app.joinMode).toBe("invite");
       const skill = await (await st.site("ntwrk", "/SKILL.md")).text();

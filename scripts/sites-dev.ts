@@ -93,7 +93,7 @@ export function serveSite(s: Site, opts: DevOptions) {
     port: opts.port,
     hostname: "127.0.0.1",
     async fetch(req) {
-      const retired = retiredSitePage(req);
+      const retired = retiredSitePage(req, s.app);
       if (retired) return retired;
       const url = new URL(req.url);
       if (isBackendPath(url.pathname)) return proxy(req, s, opts.apiOrigin, secret || undefined, opts.now);

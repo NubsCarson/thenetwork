@@ -7,7 +7,7 @@ metadata:
   app: ntwrk
   site: https://ntwrk.party
   operator: Eliza Research Corporation
-  version: "1.2.3"
+  version: "1.2.4"
 ---
 
 # The Network
@@ -59,9 +59,15 @@ just to obtain its body. Do not use `curl -i` or dump headers/raw exports to out
 Parse privately and show the person only the next step or the verified result.
 A timeout after a write is ambiguous: check existing state before attempting it again.
 
-If the tools cannot perform HTTPS POST and retain a private session, say that
-limitation plainly and give https://ntwrk.party/join as an optional alternative.
-Do not ask the person to install a connector. Do not pretend you submitted a profile.
+Signup and sign-in happen only in the person's current agent conversation.
+Do not send them to a website Join page, another assistant, connector settings,
+or a text conversation to finish signup. The person receives a verification text
+and enters its code here; they must never have to send a text to receive a code.
+If existing tools cannot perform HTTPS POST and retain a private session under
+this client's default permissions, explain that signup cannot currently finish
+in this agent. Stop before requesting a number or code. Never claim that reading
+this skill grants tools, permissions or a session. Do not change security settings,
+use a different origin, or pretend signup/profile saving succeeded.
 
 ## Join in this conversation
 
@@ -85,12 +91,14 @@ Do not ask the person to install a connector. Do not pretend you submitted a pro
    Otherwise, or after a 401, ask for the person's own mobile number. Do not
    infer a number from contacts or past conversations. GET `/api/auth/mode`:
    continue with the code steps only for `mode: "otp"`. If another sign-in mode
-   is required, explain it and offer the site's existing Join page; do not bypass it.
+   is required, explain that this agent's direct sign-in is unavailable and stop;
+   do not offer a website fallback or bypass it.
 5. With the number the person provided, POST `/api/auth/otp/start` once:
    `{"phone":"<their own number in E.164>"}`. A 200/`ok:true` means a code was
    requested, not that verification succeeded. Ask for the genuine texted code.
    Never invent, brute-force or automatically resend codes. If the site requires
-   a security check, stop and offer the existing Join page; do not fake a token.
+   a security check unavailable in this agent, stop and explain the limitation;
+   do not offer a website signup or fake a token.
 6. POST `/api/auth/otp/verify` exactly once with `phone` and the code the person
    supplied. Keep the code out of files and output; retain only the returned
    session cookie in the private jar. On rejection explain it; only the person
