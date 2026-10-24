@@ -64,8 +64,16 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
       expect(md.headers.get("content-type")).toBe("text/plain; charset=utf-8");
       const text = await md.text();
       expect(text).toContain(`name: ${s.skill}`);
-      // The skill names this site's own MCP endpoint (the router forwards it with the site's signed host).
-      expect(text).toContain(`https://${s.domain}/mcp`);
+      // Each guide names its app-bound transport: direct phone/session HTTP for Friends,
+      // the existing site MCP endpoint for the other apps.
+      if (app === "friends") {
+        expect(text).toContain(`https://${s.domain}/`);
+        expect(text).toContain("/api/auth/otp/start");
+        expect(text).toContain("/api/auth/otp/verify");
+        expect(text).toContain("/api/me/export");
+        expect(text).toContain("session.cookies");
+        expect(text).not.toContain("In ChatGPT, add ");
+      } else expect(text).toContain(`https://${s.domain}/mcp`);
       expect(text).not.toContain("https://api.ntwrk.party/mcp");
       const idx = await st.site(app, "/.well-known/agent-skills/index.json");
       expect(idx.status).toBe(200);
