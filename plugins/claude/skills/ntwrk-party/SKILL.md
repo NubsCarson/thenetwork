@@ -7,7 +7,7 @@ metadata:
   app: ntwrk
   site: https://ntwrk.party
   operator: Eliza Research Corporation
-  version: "1.2.4"
+  version: "1.2.5"
 ---
 
 # The Network
@@ -68,6 +68,10 @@ this client's default permissions, explain that signup cannot currently finish
 in this agent. Stop before requesting a number or code. Never claim that reading
 this skill grants tools, permissions or a session. Do not change security settings,
 use a different origin, or pretend signup/profile saving succeeded.
+Do not ask the person to change a domain allowlist, enable tools, install anything,
+or adjust permissions as a signup step. In an ordinary signup request, state the
+unsupported capability simply: "Signup isn't supported in this agent yet."
+Give technical diagnostics only when the person explicitly asks for them.
 
 ## Join in this conversation
 

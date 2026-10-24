@@ -216,10 +216,12 @@ async function sitesGates(b: Block) {
       }
     });
 
-    await b.run("platform-5: every site's phone step renders the Turnstile widget with the build's site key (the production API refuses codes without a token)", () => {
-      for (const s of SITES.filter(s => s.app === "peon")) {
-        const page = readFileSync(join(built[s.domain]!.out, "join.html"), "utf8");
-        expect([s.domain, page.includes('content="0x4AAAAAAAsimauditkey"') && page.includes("data-turnstile")]).toEqual([s.domain, true]);
+    await b.run("platform-5: the legacy phone form renders Turnstile; agent-only sites ship no Join form", () => {
+      for (const s of SITES) {
+        if (s.app === "peon") {
+          const page = readFileSync(join(built[s.domain]!.out, "join.html"), "utf8");
+          expect([s.domain, page.includes('content="0x4AAAAAAAsimauditkey"') && page.includes("data-turnstile")]).toEqual([s.domain, true]);
+        } else expect([s.domain, existsSync(join(built[s.domain]!.out, "join.html"))]).toEqual([s.domain, false]);
       }
     });
 
