@@ -13,7 +13,7 @@ import { APPS, keywordApp } from "../../packages/platform/src/apps.ts";
 import { AGENTS, keywordFor, joinMessageFor, promptFor } from "../agents.ts";
 import { TEXT_LINE } from "../skills.config.ts";
 import { device } from "../shared/agent.ts";
-import { SITES, buildSite, walk, type Site } from "../sites.ts";
+import { SITES, buildSite, walk, skillDescription, type Site } from "../sites.ts";
 import { serveSite } from "../../scripts/sites-dev.ts";
 import { toE164 } from "../shared/api.ts";
 
@@ -122,7 +122,9 @@ describe.each(SITES)("$domain", (s) => {
       const skill = read(s, f).toLowerCase();
       for (const d of OTHER_APP_DOMAINS(s)) expect(skill.includes(d), `${f} mentions ${d}`).toBe(false);
       if (s.app !== "ntwrk") expect(skill.replaceAll("help@ntwrk.party", ""), f).not.toMatch(/the network|ntwrk\.party/);
-      expect(skill, f).not.toMatch(/new york|nyc|san francisco/);
+      // Direct API instructions name region codes; discovery copy remains location-neutral.
+      if (s.app === "friends") expect(skillDescription(read(s, f)).toLowerCase(), f).not.toMatch(/new york|nyc|san francisco/);
+      else expect(skill, f).not.toMatch(/new york|nyc|san francisco/);
     }
   });
 
@@ -145,7 +147,12 @@ describe.each(SITES)("$domain", (s) => {
       const skill = read(s, f);
       expect(skill).toContain(`confirm its app is ${s.app}`);
       expect(skill).toContain("never submit across apps");
-      if (s.app !== "slop") expect(skill).toContain(`In ChatGPT, add https://${s.domain}/mcp/openai instead`);
+      if (s.app === "friends") {
+        expect(skill).toContain("/api/auth/otp/verify");
+        expect(skill).toContain("/api/me/export");
+        expect(skill).toContain("session.cookies");
+        expect(skill).not.toContain("In ChatGPT, add ");
+      } else if (s.app !== "slop") expect(skill).toContain(`In ChatGPT, add https://${s.domain}/mcp/openai instead`);
     }
   });
 

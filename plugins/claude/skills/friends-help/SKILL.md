@@ -26,9 +26,9 @@ Never invent age, profile facts, consent, verification, saved data or introducti
 A draft is not saved until the site confirms it. A saved profile is not a match.
 
 friends.help helps people make friends through small group plans at public places.
-Anyone 13+ may join; matching and introductions are adults 18+ only. Groups usually
+Anyone 13 or older may join; matching and introductions are for adults 18 and older only. Groups usually
 have 3–6 people. Other members see only the first name and neighbourhood, not the
-phone number. All these apps are powered by The Network.
+phone number.
 
 ## Existing HTTPS capability
 
@@ -93,7 +93,8 @@ Do not ask the person to install a connector. Do not pretend you submitted a pro
    supplied. Keep the code out of files and output; retain only the returned
    session cookie in the private jar. On rejection explain it; only the person
    can authorize a new code request. On success, GET `/api/me` with that jar.
-7. Confirm `app` is `friends`. If a membership already exists, do not POST Join
+7. Check the reply and confirm its app is friends; never submit across apps.
+   If a membership already exists, do not POST Join
    again to overwrite it: that endpoint does not update existing profiles. Read
    the existing account as described below and report its actual state. Do not
    claim a newly drafted profile was saved over an existing membership.
@@ -137,7 +138,7 @@ Do not sign up someone else, contact other members, request their information,
 send invitations, or change another app. The lowest stated age applies; members
 13–17 must never be matched or introduced to anyone. No background checks are run.
 
-Text STOP to stop messages from the shared line; `leave friends.help` leaves this
+Text STOP stops every text from the shared line; "leave friends.help" leaves this
 app only. Export/deletion support is help@ntwrk.party. Do not invoke destructive
 account controls during signup. The text keyword is `friends` or `friends.help`
 on +18087881821; sending a text is the person's separate choice, never an automatic
