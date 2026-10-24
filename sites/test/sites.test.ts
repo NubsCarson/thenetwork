@@ -123,7 +123,7 @@ describe.each(SITES)("$domain", (s) => {
       for (const d of OTHER_APP_DOMAINS(s)) expect(skill.includes(d), `${f} mentions ${d}`).toBe(false);
       if (s.app !== "ntwrk") expect(skill.replaceAll("help@ntwrk.party", ""), f).not.toMatch(/the network|ntwrk\.party/);
       // Direct API instructions name region codes; discovery copy remains location-neutral.
-      if (s.app === "friends") expect(skillDescription(read(s, f)).toLowerCase(), f).not.toMatch(/new york|nyc|san francisco/);
+      if (["friends", "slop", "ntwrk"].includes(s.app)) expect(skillDescription(read(s, f)).toLowerCase(), f).not.toMatch(/new york|nyc|san francisco/);
       else expect(skill, f).not.toMatch(/new york|nyc|san francisco/);
     }
   });
@@ -147,7 +147,7 @@ describe.each(SITES)("$domain", (s) => {
       const skill = read(s, f);
       expect(skill).toContain(`confirm its app is ${s.app}`);
       expect(skill).toContain("never submit across apps");
-      if (s.app === "friends") {
+      if (["friends", "slop", "ntwrk"].includes(s.app)) {
         expect(skill).toContain("/api/auth/otp/verify");
         expect(skill).toContain("/api/me/export");
         expect(skill).toContain("session.cookies");
@@ -241,13 +241,14 @@ test("staging builds keep the served entry, skills and signed router on configur
     } });
     const base = `http://127.0.0.1:${server.port}`;
     const skill = await (await fetch(`${base}/SKILL.md`)).text();
-    expect(skill).toContain(`MCP endpoint is ${origins.slop}/mcp`);
-    for (const path of ["join?via=agent", "privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
+    expect(skill).toContain(`${origins.slop}/`);
+    expect(skill).toContain("/api/auth/otp/verify");
+    for (const path of ["join", "privacy", "terms"]) expect(skill).toContain(`${origins.slop}/${path}`);
     expect(skill).toContain("Email: help@ntwrk.party");
     expect(skill).not.toContain("https://slop.date");
     const index = await (await fetch(`${base}/.well-known/agent-skills/index.json`)).json() as { skills: { url: string; digest: string }[] };
     expect(await (await fetch(base + index.skills[0]!.url)).text()).toBe(skill);
-    expect(readFileSync(join(hubDirectory, "SKILL.md"), "utf8")).toContain(`${origins.ntwrk}/join?via=agent`);
+    expect(readFileSync(join(hubDirectory, "SKILL.md"), "utf8")).toContain(`${origins.ntwrk}/join`);
     for (const path of ["/api/app", "/mcp", "/oauth/authorize", "/.well-known/oauth-protected-resource/mcp"]) {
       expect((await (await fetch(base + path)).json()).id).toBe("slop");
     }

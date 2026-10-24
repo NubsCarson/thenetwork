@@ -245,7 +245,7 @@ async function sitesGates(b: Block) {
       for (const s of SITES) {
         const r = built[s.domain]!;
         const skill = readFileSync(join(r.out, "SKILL.md"), "utf8");
-        if (s.app === "friends") {
+        if (["friends", "slop", "ntwrk"].includes(s.app)) {
           expect([s.domain, skill.includes(`https://${s.domain}/`) && skill.includes("/api/auth/otp/verify") && skill.includes("/api/me/export")]).toEqual([s.domain, true]);
           expect(skill).not.toContain("In ChatGPT, add ");
         } else expect([s.domain, skill.includes(`https://${s.domain}/mcp`)]).toEqual([s.domain, true]);

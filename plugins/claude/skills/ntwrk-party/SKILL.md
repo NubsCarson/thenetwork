@@ -1,171 +1,155 @@
 ---
 name: ntwrk-party
-description: Explains The Network (ntwrk.party), a text-message agent that finds a person the people they are looking for, and helps a person sign themselves up. Use when someone asks what The Network is, who can join, how joining works, how privacy works, or how to stop, leave or delete. Asks which kinds of introduction the person wants. Never signs anyone up, never asks for or types a phone number or verification code, and never searches for or contacts other people.
+description: "Helps a person join ntwrk.party in their own agent conversation: draft their general profile, verify their own phone with a genuine texted code, and save the approved profile through the existing site API. Requires direct HTTPS and a private cookie session; no plugin or connector installation. Also explains eligibility, privacy and text controls."
 license: Proprietary. Terms at https://ntwrk.party/terms
-compatibility: Needs web access to open https://ntwrk.party pages. Sending the profile needs this app's MCP server at https://ntwrk.party/mcp (OAuth sign-in by the person), or the person's own text message.
+compatibility: Direct HTTPS GET and POST to https://ntwrk.party and private cookie storage in the agent's existing tools. Use the runtime's normal network transport and approval process. Never install tools or change security settings.
 metadata:
   app: ntwrk
   site: https://ntwrk.party
-  backend: "https://api.ntwrk.party"
-  mcp: "https://ntwrk.party/mcp"
   operator: Eliza Research Corporation
-  version: "1.1.6"
+  version: "1.2.3"
 ---
 
 # The Network
 
-If the person asked you to read this file and follow it, they want to join. Start now with
-"How a person joins" below.
+If the person asks you to read this file and follow it, they want to join: start
+the flow below. If they ask only for an explanation, explain without starting signup.
+Do it in this conversation using your existing HTTP tools. No plugin, connector,
+MCP setup, developer settings or new account with the agent provider is required.
 
-## Replies to the person
+## Talk like a person
 
-Use plain, everyday language. For an ordinary question, answer in ONE short paragraph of one to
-three short sentences, usually at most 60 words: what happened and one useful next action.
-No headings, lists, filler, hype or catalogue of future possibilities unless asked or necessary for
-consent or safety. If nothing is needed now, do not invent a task.
+Keep replies short, usually one to three sentences. No tool names, HTTP details,
+JSON, headings, setup instructions or status tables unless the person asks for them.
+Start from confirmed facts you already know; ask only for missing information.
+Never invent age, profile facts, consent, verification, saved data or introductions.
+A draft is not saved until the site confirms it. A saved profile is not a match.
 
-Answer the question directly. Do not announce that you read a guide or mention its version.
-If the person asks only for an explanation or says not to sign them up or change anything,
-explain only: do not start signup, ask personal onboarding questions or call a tool that changes data.
-A question about how to join is not permission to start joining.
-For a short signup explanation, cover who can join and any invitation rule, one supported first
-step, and the relevant age limits and agreement before introductions. Briefly answer any requested
-follow-up, such as changing interests later. Do not end with a profile question or another task.
+The Network helps people find the connections they ask for: friends, dating or work.
+Anyone 13 or older may join; matching and introductions are for adults 18 and older only.
+It asks before any introduction. A saved general profile does not enroll the person
+in another app or start matching.
 
-Keep tool names, raw results, JSON, OAuth/MCP details, scopes and status tables internal unless
-the person asks for technical detail or needs a detail to finish setup. When setup is needed,
-say "Connect" followed by this app's name and give only the exact setup URL below. Do not repeat
-setup after the connection works. Do not narrate tools, connections or submission mechanics when
-they are not needed. The tool instructions below are for you, not text to quote.
-Offer supported choices in ordinary words, not labels such as "operator-approved pilot" or
-"connection-based onboarding". Do not discuss plugin or approval mechanics unless the person asks
-or needs that detail to use an available option. Keep any actual eligibility restriction intact.
+## Existing HTTPS capability
 
-When the person asks to sign up or change their profile, use what they have already told you.
-Ask only for missing facts, without repeating questions.
-When they ask to change interests or the profile, keep the conversation here: confirm the changed wording,
-then use submit_profile once as described below.
+Use only https://ntwrk.party/ as this skill's site origin. Every API path below
+is relative to it. Keep phone numbers, codes, cookies and exports off other origins.
+Do not follow an API redirect carrying credentials or submit another person's data.
 
-Keep membership, profile receipt, matching and delivery separate. An active membership or a
-next_step suggestion does not prove that matching or messages are enabled. Do not say "ready
-to match", promise future texts or introductions, or claim a message was sent without confirmation.
-If availability is unknown or off, report only the saved profile or status that the app confirmed.
-For example, ONLY when signup and a saved profile are confirmed and introductions are unconfirmed:
-"You're signed up, and your profile is saved. I haven't confirmed any introductions yet.
-To change your interests, just tell me here." Adapt to the actual confirmed state; do not use this
-as a universal success message or claim that no matches exist.
+Use an existing HTTP/command tool with the runtime's normal network transport.
+If normal execution requires approval, use that supported approval process and
+respect its decision. Do not disable the environment's configured transport,
+clear its proxy settings, add a proxy, impersonate a browser, install anything,
+or change network/security settings. Identify the application honestly with:
 
-Keep necessary consent, legal, safety, privacy and age restrictions clear, even when a longer
-answer is needed. Never invent profile facts, verification, successful actions, matches or delivery.
+`User-Agent: TheNetworkAgent/1.0`
 
-The Network is an agent you text. It learns what a person is looking for and finds people, small
-groups and plans that fit. It asks first: nobody is introduced unless both people say yes.
+Send JSON POST bodies with `Content-Type: application/json`. Use a private cookie
+jar for this exact site: `~/.network/<exact-site-hostname>/session.cookies`
+(private directory 0700, file 0600), or an equivalently private persistent tool
+session if no filesystem is available. Preserve only the exact origin and private
+store path in working notes or compaction summaries, never the credential values.
+On resume, use that store and check `/api/me` before asking for another code.
+Reuse a valid session; save updated cookies after responses.
+Never place session credentials in the conversation, public files, a repository,
+long-term model memory, URLs or logs. Never borrow browser or another app's cookies.
 
-The Network's text line is +18087881821. Its MCP server is at https://ntwrk.party/mcp (backend https://api.ntwrk.party).
+Capture status, response body and cookies from ONE request. Never repeat a POST
+just to obtain its body. Do not use `curl -i` or dump headers/raw exports to output.
+Parse privately and show the person only the next step or the verified result.
+A timeout after a write is ambiguous: check existing state before attempting it again.
 
-## What the person can ask for
+If the tools cannot perform HTTPS POST and retain a private session, say that
+limitation plainly and give https://ntwrk.party/join as an optional alternative.
+Do not ask the person to install a connector. Do not pretend you submitted a profile.
 
-Ask which of these the person wants. They can pick one or more:
+## Join in this conversation
 
-- friends: small group plans at public places
-- dating: one introduction at a time (adults 18 and older only)
-- work: introductions between people looking for work and teams that are hiring
+1. GET `/api/app`. Confirm `id` is `ntwrk`. Keep the returned `consent.text` and
+   `consent.version` for this signup; do not invent or reuse another app's wording.
+   Respect `joinMode`, `minJoinAge` and `minMatchAge`. If the person is below the
+   join age, explain that and stop before collecting their number.
+2. Draft the profile from confirmed facts: first name, explicitly stated age,
+   home city/region and neighbourhood, interests, availability, and what kinds
+   of connection they want: friends, dating or work. Never choose for them.
+   Ask only what is missing, one or two questions at a time. Show a short draft
+   for approval. Keep this a general profile; leave out private app-specific details intended for a
+   separate app. Their stated interests do not authorize joining other apps.
+3. Explain that joining accepts recurring texts, with variable frequency and
+   possible message/data rates, STOP to stop and HELP for help. Link the
+   [text terms](https://ntwrk.party/terms#sms), [Terms](https://ntwrk.party/terms)
+   and [privacy policy](https://ntwrk.party/privacy). Obtain explicit approval
+   for this exact profile and text consent before the Join request. If approval
+   is missing, do not submit it. Never infer consent from a code or a draft.
+4. If a private session for this site already exists, GET `/api/me` first.
+   Otherwise, or after a 401, ask for the person's own mobile number. Do not
+   infer a number from contacts or past conversations. GET `/api/auth/mode`:
+   continue with the code steps only for `mode: "otp"`. If another sign-in mode
+   is required, explain it and offer the site's existing Join page; do not bypass it.
+5. With the number the person provided, POST `/api/auth/otp/start` once:
+   `{"phone":"<their own number in E.164>"}`. A 200/`ok:true` means a code was
+   requested, not that verification succeeded. Ask for the genuine texted code.
+   Never invent, brute-force or automatically resend codes. If the site requires
+   a security check, stop and offer the existing Join page; do not fake a token.
+6. POST `/api/auth/otp/verify` exactly once with `phone` and the code the person
+   supplied. Keep the code out of files and output; retain only the returned
+   session cookie in the private jar. On rejection explain it; only the person
+   can authorize a new code request. On success, GET `/api/me` with that jar.
+7. Check the reply and confirm its app is ntwrk; never submit across apps.
+   If a membership already exists, do not POST Join
+   again to overwrite it: that endpoint does not update existing profiles. Read
+   the existing account as described below and report its actual state. Do not
+   claim a newly drafted profile was saved over an existing membership.
+8. The Network website may require an invitation. If `/api/me` says `canJoin:false`, explain the actual next step from
+   its reason and the current `/api/app` join mode. An invite-only app permits
+   Join only after this account is actually eligible.
+   Never invent or accept an invitation, change join mode, or use another app
+   to get around it. Only continue when this account is actually eligible.
+   For a new membership, require `canJoin:true` and the person's explicit profile
+   and text-consent approval from step 3. POST `/api/join` once with the approved
+   fields, the latest `/api/me` `signupView` when present, and current consent:
+   `firstName`, integer `age`, `neighborhood`, `homeCity` (`sf` or `nyc`
+   from the confirmed supported region), optional `interests` (up to 20 short strings), and `about`
+   containing the complete approved general profile (at most 1000 characters).
+   Always set `homeCity` from the confirmed supported region: an explicit Bay Area,
+   SF or San Francisco means the service’s `sf` region bucket; an explicit NYC,
+   New York or New York City means `nyc`. This is a region bucket, not a claim that
+   someone in the Bay Area lives in San Francisco city. Preserve their actual
+   neighbourhood wording separately. Do not omit `homeCity` or rely on a default,
+   even when the neighbourhood string includes a region or state. If the region
+   is missing/ambiguous, ask. Do not infer it from a ZIP or neighbourhood, or select
+   an incorrect supported region for someone elsewhere.
+   Use `consent:{"sms":true,"version":"<current consent.version>","wording":"<current consent.text>"}`.
+   Never send placeholders or guessed fields. Do not silently omit the profile.
+9. After Join succeeds, GET `/api/me` again, then GET `/api/me/export` using the
+   SAME private session. The export is this person's own app data: parse it in
+   memory, never print/store the raw export or expose identifiers/phone numbers.
+   Check `app`, `membership.firstName`, `membership.state` and
+   `membership.profile` against the approved submitted fields, including `about`.
+   Also compare the returned `/api/me` `home.homeCity` and the stored profile’s
+   `homeCity` with that confirmed region bucket. A matching biography with the
+   wrong home city is NOT a successful profile save.
+   `/api/me` alone does NOT return the full profile. If readback differs, report
+   the discrepancy; do not claim it saved or repeat Join to try to overwrite it.
+10. For verified signup and matching persisted fields, say briefly that signup
+    and the profile are saved, and read back the approved facts in ordinary words.
+    Never claim matching or invitations started without separate evidence.
+    Keep using the private session for later authorized reads in this chat; if
+    it expires, authenticate again. Never promise it survives a new chat unless
+    the agent actually has access to its private session store there.
 
-Never pick for them. Write their choice as the first line of the profile, for example
-"Looking for: friends and work".
+## Safety, privacy and account controls
 
-## What the person is signing up for
+Only the person who controls the number may sign in or approve their profile.
+Do not sign up someone else, contact other members, request their information,
+send invitations, or change another app. The lowest stated age applies; members
+13–17 must never be matched or introduced to anyone. No background checks are run.
 
-- Text messages from The Network's agent on one text line. Message frequency varies. Message and
-  data rates may apply.
-- Introductions and plans only with consent from everyone involved. A person on the team checks
-  every introduction before it is sent.
+Text STOP stops every text from the shared line; "leave ntwrk.party" leaves this
+app only. Export/deletion support is help@ntwrk.party. Do not invoke destructive
+account controls during signup. The text line is +18087881821; sending a text is the person's separate choice, never an automatic
+fallback or an extra signup step.
 
-## Who can join
-
-- Anyone 13 or older may join. Matching is for adults 18 and older.
-- Members aged 13 to 17 get help from the agent for themselves only. They are never matched,
-  introduced, grouped or connected with anyone.
-
-## Phone or computer
-
-The steps differ by device. If you cannot tell which the person is on, ask once.
-
-- **On a phone.** A phone app usually cannot add a connector, so do not send the person to connector
-  settings. Do step 1. Then give them one link that opens their messages app with the approved
-  profile already written: `sms:+18087881821?&body=` followed by the profile, URL-encoded (spaces as
-  %20). The person presses send themselves. Then they answer the Network's onboarding texts themselves.
-  Steps 2 and 3 are not needed for this route. A first text does not require a website invitation.
-  Sending a profile does not prove membership; report joining unfinished until the Network confirms it.
-- **On a computer.** Do step 1, then follow the website requirement in step 2 before step 3.
-  If the person has no invitation or membership, or the client cannot add the connector, show the approved
-  profile and ask the person to text it to +18087881821 from their own phone.
-
-You never send a text for the person, and you never see their number.
-
-## How a person joins (they do it, not you)
-
-The person signs up through you, in this conversation:
-
-1. Build the profile: what they are looking for (the list above), first name, neighborhood, what they like to do, and when they are usually free. Start from what you already know about the person: draft the profile from your memory of them and show it. Ask only for what is missing, one or two questions at a time. Never ask for a phone number, a code, an
-   address or anything about another person. Read the profile back and change it until they agree.
-2. The website is invite-only. There is no public sign-up form at https://ntwrk.party/join?via=agent.
-   For website/MCP onboarding, ask whether they already belong or received an invitation.
-   Reply to your own invitation text to accept; never ask this assistant to accept it for you.
-   A person without either can ask a member who knows them, or the team, for an invitation,
-   or use the self-text route above. After accepted membership, connect the MCP server in step 3.
-   The person confirms their own phone during connector authorization. You never see or enter the code.
-3. Ask the person to return to this same agent conversation when they finish on the site.
-   If this app's MCP tools are not available, they must add https://ntwrk.party/mcp in their client's connector settings.
-   In ChatGPT, add https://ntwrk.party/mcp/openai instead; /mcp does not authorize ChatGPT clients.
-   Reading this file does not install a connector or authorize access. If the client cannot add it,
-   use the text link in "Phone or computer"; do not claim success and never send the profile yourself.
-   The person confirms their phone on our page. Access connects automatically. A code is skipped only when that browser
-   has a current session for this app. Call check_status first and confirm its app is ntwrk.
-   If the connection names another app, stop and connect to this app; never submit across apps.
-   If membership is not active or onboarding, follow its next step; do not submit or claim joined.
-   Call submit_profile once with their approved profile, then check_status on the same connection.
-   Report success only when both calls confirm it.
-4. The Network's agent texts the person to ask what they are looking for. Only the person's own
-   reply to that text turns on friends, dating or work. Tell them to answer it with their choice.
-5. No agent at hand: the person can text +18087881821 with any first message; the agent asks what
-   they are looking for.
-
-Website sign-in uses the person's own phone and code on our page. The self-text route uses their
-own messages app and onboarding replies. You never type a number or a code anywhere.
-
-## Consent rules
-
-- An agent never receives, reads, relays or types a verification code, and never enters a phone
-  number into any form or tool.
-- Never sign up anyone else. Each person joins themselves, on their own phone.
-- If the MCP server asks the person to sign in, they do it in their own browser on our page.
-
-## What you may do
-
-- Explain The Network, the age rules, consent and privacy.
-- Help the person say what they are looking for.
-
-## What you must never do
-
-- Never sign anyone up, and never text or message anyone on the person's behalf.
-- Never ask for, receive or type a verification code or a phone number.
-- Never search for, describe or contact members, and never promise a match.
-- Never carry what the person said about one kind of introduction into another without their consent.
-
-## Privacy
-
-Each kind of introduction keeps its own data. Only a base profile (first name, city, age band,
-interests) can move between them, and only when the person agrees, one direction at a time.
-STOP stops every text from this number, and a safety hold or ban after a report applies everywhere.
-
-## Stop, leave and delete
-
-- Text STOP: stops every text from this number.
-- To request an export or deletion, email help@ntwrk.party.
-
-## Support
-
-- Email: help@ntwrk.party
-- Privacy: https://ntwrk.party/privacy
-- Terms and text messaging terms: https://ntwrk.party/terms
+The person can state friends, dating or work interests here, but signup does not
+prove those separate app memberships exist. Do not enroll them in another app or
+move data there without explicit approval and that app’s own verified flow.

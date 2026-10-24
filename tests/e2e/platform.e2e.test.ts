@@ -66,7 +66,7 @@ describe.skipIf(!pgAvailable)("the platform end to end (sites -> router -> backe
       expect(text).toContain(`name: ${s.skill}`);
       // Each guide names its app-bound transport: direct phone/session HTTP for Friends,
       // the existing site MCP endpoint for the other apps.
-      if (app === "friends") {
+      if (["friends", "slop", "ntwrk"].includes(app)) {
         expect(text).toContain(`https://${s.domain}/`);
         expect(text).toContain("/api/auth/otp/start");
         expect(text).toContain("/api/auth/otp/verify");
