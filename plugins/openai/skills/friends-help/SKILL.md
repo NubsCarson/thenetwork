@@ -7,7 +7,7 @@ metadata:
   app: friends
   site: https://friends.help
   operator: Eliza Research Corporation
-  version: "1.2.1"
+  version: "1.2.2"
 ---
 
 # friends.help
@@ -70,7 +70,7 @@ Do not ask the person to install a connector. Do not pretend you submitted a pro
    Respect `joinMode`, `minJoinAge` and `minMatchAge`. If the person is below the
    join age, explain that and stop before collecting their number.
 2. Draft the profile from confirmed facts: first name, explicitly stated age,
-   home city/neighbourhood, interests, availability, and groups or one-on-one.
+   home city/region and neighbourhood, interests, availability, and groups or one-on-one.
    Ask only what is missing, one or two questions at a time. Show a short draft
    for approval. Keep this a friendship profile; leave out information intended for other apps.
 3. Explain that joining accepts recurring texts, with variable frequency and
@@ -100,9 +100,17 @@ Do not ask the person to install a connector. Do not pretend you submitted a pro
 8. For a new membership, require `canJoin:true` and the person's explicit profile
    and text-consent approval from step 3. POST `/api/join` once with the approved
    fields, the latest `/api/me` `signupView` when present, and current consent:
-   `firstName`, integer `age`, `neighborhood`, optional `homeCity` (`sf` or `nyc`
-   only when confirmed), optional `interests` (up to 20 short strings), and `about`
+   `firstName`, integer `age`, `neighborhood`, `homeCity` (`sf` or `nyc`
+   from the confirmed supported region), optional `interests` (up to 20 short strings), and `about`
    containing the complete approved friendship profile (at most 1000 characters).
+   Always set `homeCity` from the confirmed supported region: an explicit Bay Area,
+   SF or San Francisco means the service’s `sf` region bucket; an explicit NYC,
+   New York or New York City means `nyc`. This is a region bucket, not a claim that
+   someone in the Bay Area lives in San Francisco city. Preserve their actual
+   neighbourhood wording separately. Do not omit `homeCity` or rely on a default,
+   even when the neighbourhood string includes a region or state. If the region
+   is missing/ambiguous, ask. Do not infer it from a ZIP or neighbourhood, or select
+   an incorrect supported region for someone elsewhere.
    Use `consent:{"sms":true,"version":"<current consent.version>","wording":"<current consent.text>"}`.
    Never send placeholders or guessed fields. Do not silently omit the profile.
 9. After Join succeeds, GET `/api/me` again, then GET `/api/me/export` using the
@@ -110,6 +118,9 @@ Do not ask the person to install a connector. Do not pretend you submitted a pro
    memory, never print/store the raw export or expose identifiers/phone numbers.
    Check `app`, `membership.firstName`, `membership.state` and
    `membership.profile` against the approved submitted fields, including `about`.
+   Also compare the returned `/api/me` `home.homeCity` and the stored profile’s
+   `homeCity` with that confirmed region bucket. A matching biography with the
+   wrong home city is NOT a successful profile save.
    `/api/me` alone does NOT return the full profile. If readback differs, report
    the discrepancy; do not claim it saved or repeat Join to try to overwrite it.
 10. For verified signup and matching persisted fields, say briefly that signup
