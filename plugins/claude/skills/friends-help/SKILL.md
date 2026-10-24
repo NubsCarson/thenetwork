@@ -1,168 +1,133 @@
 ---
 name: friends-help
-description: Explains friends.help, a service by text message that helps people make friends through small group plans at public places, and helps a person sign themselves up. Use when someone asks what friends.help is, who can use it, whether it is safe, how to join, what happens to their data, or how to stop, leave or delete. Gives the join link or the text keyword. Never signs anyone up, never asks for or types a phone number or verification code, and never contacts or describes other people.
+description: "Helps a person join friends.help in their own agent conversation: draft their friendship profile, verify their own phone with a genuine texted code, and save the approved profile through the existing site API. Requires direct HTTPS and a private cookie session; no plugin or connector installation. Also explains eligibility, privacy and text controls."
 license: Proprietary. Terms at https://friends.help/terms
-compatibility: Needs web access to open https://friends.help pages. Sending the profile needs this app's MCP server at https://friends.help/mcp (OAuth sign-in by the person).
+compatibility: Direct HTTPS GET and POST to https://friends.help and private cookie storage in the agent's existing tools. Use the runtime's normal network transport and approval process. Never install tools or change security settings.
 metadata:
   app: friends
   site: https://friends.help
-  mcp: "https://friends.help/mcp"
   operator: Eliza Research Corporation
-  version: "1.1.5"
+  version: "1.2.1"
 ---
 
 # friends.help
 
-If the person asked you to read this file and follow it, they want to join. Start now with
-"How a person joins" below.
+If the person asks you to read this file and follow it, they want to join: start
+the flow below. If they ask only for an explanation, explain without starting signup.
+Do it in this conversation using your existing HTTP tools. No plugin, connector,
+MCP setup, developer settings or new account with the agent provider is required.
 
-## Replies to the person
+## Talk like a person
 
-Use plain, everyday language. For an ordinary question, answer in ONE short paragraph of one to
-three short sentences, usually at most 60 words: what happened and one useful next action.
-No headings, lists, filler, hype or catalogue of future possibilities unless asked or necessary for
-consent or safety. If nothing is needed now, do not invent a task.
+Keep replies short, usually one to three sentences. No tool names, HTTP details,
+JSON, headings, setup instructions or status tables unless the person asks for them.
+Start from confirmed facts you already know; ask only for missing information.
+Never invent age, profile facts, consent, verification, saved data or introductions.
+A draft is not saved until the site confirms it. A saved profile is not a match.
 
-Answer the question directly. Do not announce that you read a guide or mention its version.
-If the person asks only for an explanation or says not to sign them up or change anything,
-explain only: do not start signup, ask personal onboarding questions or call a tool that changes data.
-A question about how to join is not permission to start joining.
-For a short signup explanation, cover who can join and any invitation rule, one supported first
-step, and the relevant age limits and agreement before introductions. Briefly answer any requested
-follow-up, such as changing interests later. Do not end with a profile question or another task.
+friends.help helps people make friends through small group plans at public places.
+Anyone 13+ may join; matching and introductions are adults 18+ only. Groups usually
+have 3–6 people. Other members see only the first name and neighbourhood, not the
+phone number. All these apps are powered by The Network.
 
-Keep tool names, raw results, JSON, OAuth/MCP details, scopes and status tables internal unless
-the person asks for technical detail or needs a detail to finish setup. When setup is needed,
-say "Connect" followed by this app's name and give only the exact setup URL below. Do not repeat
-setup after the connection works. Do not narrate tools, connections or submission mechanics when
-they are not needed. The tool instructions below are for you, not text to quote.
-Offer supported choices in ordinary words, not labels such as "operator-approved pilot" or
-"connection-based onboarding". Do not discuss plugin or approval mechanics unless the person asks
-or needs that detail to use an available option. Keep any actual eligibility restriction intact.
+## Existing HTTPS capability
 
-When the person asks to sign up or change their profile, use what they have already told you.
-Ask only for missing facts, without repeating questions.
-When they ask to change interests or the profile, keep the conversation here: confirm the changed wording,
-then use submit_profile once as described below.
+Use only https://friends.help/ as this skill's site origin. Every API path below
+is relative to it. Keep phone numbers, codes, cookies and exports off other origins.
+Do not follow an API redirect carrying credentials or submit another person's data.
 
-Keep membership, profile receipt, matching and delivery separate. An active membership or a
-next_step suggestion does not prove that matching or messages are enabled. Do not say "ready
-to match", promise future texts or introductions, or claim a message was sent without confirmation.
-If availability is unknown or off, report only the saved profile or status that the app confirmed.
-For example, ONLY when signup and a saved profile are confirmed and introductions are unconfirmed:
-"You're signed up, and your profile is saved. I haven't confirmed any introductions yet.
-To change your interests, just tell me here." Adapt to the actual confirmed state; do not use this
-as a universal success message or claim that no matches exist.
+Use an existing HTTP/command tool with the runtime's normal network transport.
+If normal execution requires approval, use that supported approval process and
+respect its decision. Do not disable the environment's configured transport,
+clear its proxy settings, add a proxy, impersonate a browser, install anything,
+or change network/security settings. Identify the application honestly with:
 
-Keep necessary consent, legal, safety, privacy and age restrictions clear, even when a longer
-answer is needed. Never invent profile facts, verification, successful actions, matches or delivery.
+`User-Agent: TheNetworkAgent/1.0`
 
-friends.help helps people make friends, by text. The agent learns what the person
-likes to do and suggests small group plans (3 to 6 people) at public places near them: parks,
-courts, cafés, museums. The person says yes or skips. Friends, not dates.
+Send JSON POST bodies with `Content-Type: application/json`. Use a private cookie
+jar for this exact site: `~/.network/<exact-site-hostname>/session.cookies`
+(private directory 0700, file 0600), or an equivalently private persistent tool
+session if no filesystem is available. Preserve only the exact origin and private
+store path in working notes or compaction summaries, never the credential values.
+On resume, use that store and check `/api/me` before asking for another code.
+Reuse a valid session; save updated cookies after responses.
+Never place session credentials in the conversation, public files, a repository,
+long-term model memory, URLs or logs. Never borrow browser or another app's cookies.
 
-friends.help's text line is +18087881821. Its MCP server is at https://friends.help/mcp.
+Capture status, response body and cookies from ONE request. Never repeat a POST
+just to obtain its body. Do not use `curl -i` or dump headers/raw exports to output.
+Parse privately and show the person only the next step or the verified result.
+A timeout after a write is ambiguous: check existing state before attempting it again.
 
-## What the person is signing up for
+If the tools cannot perform HTTPS POST and retain a private session, say that
+limitation plainly and give https://friends.help/join as an optional alternative.
+Do not ask the person to install a connector. Do not pretend you submitted a profile.
 
-- Text messages from the friends.help agent on friends.help's text line: questions about what they
-  like to do, invitations to plans, plan details and reminders. Message frequency varies. Message
-  and data rates may apply.
-- Plans only with people who also said yes. A person on the team checks every plan first.
-  Other people see their first name and neighbourhood, never their phone number.
-- friends.help does not run background checks. Plans are always at public places.
+## Join in this conversation
 
-## Who can use it
+1. GET `/api/app`. Confirm `id` is `friends`. Keep the returned `consent.text` and
+   `consent.version` for this signup; do not invent or reuse another app's wording.
+   Respect `joinMode`, `minJoinAge` and `minMatchAge`. If the person is below the
+   join age, explain that and stop before collecting their number.
+2. Draft the profile from confirmed facts: first name, explicitly stated age,
+   home city/neighbourhood, interests, availability, and groups or one-on-one.
+   Ask only what is missing, one or two questions at a time. Show a short draft
+   for approval. Keep this a friendship profile; leave out information intended for other apps.
+3. Explain that joining accepts recurring texts, with variable frequency and
+   possible message/data rates, STOP to stop and HELP for help. Link the
+   [text terms](https://friends.help/terms#sms), [Terms](https://friends.help/terms)
+   and [privacy policy](https://friends.help/privacy). Obtain explicit approval
+   for this exact profile and text consent before the Join request. If approval
+   is missing, do not submit it. Never infer consent from a code or a draft.
+4. If a private session for this site already exists, GET `/api/me` first.
+   Otherwise, or after a 401, ask for the person's own mobile number. Do not
+   infer a number from contacts or past conversations. GET `/api/auth/mode`:
+   continue with the code steps only for `mode: "otp"`. If another sign-in mode
+   is required, explain it and offer the site's existing Join page; do not bypass it.
+5. With the number the person provided, POST `/api/auth/otp/start` once:
+   `{"phone":"<their own number in E.164>"}`. A 200/`ok:true` means a code was
+   requested, not that verification succeeded. Ask for the genuine texted code.
+   Never invent, brute-force or automatically resend codes. If the site requires
+   a security check, stop and offer the existing Join page; do not fake a token.
+6. POST `/api/auth/otp/verify` exactly once with `phone` and the code the person
+   supplied. Keep the code out of files and output; retain only the returned
+   session cookie in the private jar. On rejection explain it; only the person
+   can authorize a new code request. On success, GET `/api/me` with that jar.
+7. Confirm `app` is `friends`. If a membership already exists, do not POST Join
+   again to overwrite it: that endpoint does not update existing profiles. Read
+   the existing account as described below and report its actual state. Do not
+   claim a newly drafted profile was saved over an existing membership.
+8. For a new membership, require `canJoin:true` and the person's explicit profile
+   and text-consent approval from step 3. POST `/api/join` once with the approved
+   fields, the latest `/api/me` `signupView` when present, and current consent:
+   `firstName`, integer `age`, `neighborhood`, optional `homeCity` (`sf` or `nyc`
+   only when confirmed), optional `interests` (up to 20 short strings), and `about`
+   containing the complete approved friendship profile (at most 1000 characters).
+   Use `consent:{"sms":true,"version":"<current consent.version>","wording":"<current consent.text>"}`.
+   Never send placeholders or guessed fields. Do not silently omit the profile.
+9. After Join succeeds, GET `/api/me` again, then GET `/api/me/export` using the
+   SAME private session. The export is this person's own app data: parse it in
+   memory, never print/store the raw export or expose identifiers/phone numbers.
+   Check `app`, `membership.firstName`, `membership.state` and
+   `membership.profile` against the approved submitted fields, including `about`.
+   `/api/me` alone does NOT return the full profile. If readback differs, report
+   the discrepancy; do not claim it saved or repeat Join to try to overwrite it.
+10. For verified signup and matching persisted fields, say briefly that signup
+    and the profile are saved, and read back the approved facts in ordinary words.
+    Never claim matching or invitations started without separate evidence.
+    Keep using the private session for later authorized reads in this chat; if
+    it expires, authenticate again. Never promise it survives a new chat unless
+    the agent actually has access to its private session store there.
 
-- Anyone 13 or older may join. Matching and group plans are for adults 18 and older only.
-- Members aged 13 to 17 can get ideas for things to do, but friends.help never matches them,
-  never puts them in a group and never introduces them to anyone.
-- One person, one phone number. The person must use their own number.
+## Safety, privacy and account controls
 
-## Phone or computer
+Only the person who controls the number may sign in or approve their profile.
+Do not sign up someone else, contact other members, request their information,
+send invitations, or change another app. The lowest stated age applies; members
+13–17 must never be matched or introduced to anyone. No background checks are run.
 
-The steps differ by device. If you cannot tell which the person is on, ask once.
-
-- **On a phone.** A phone app usually cannot add a connector, so do not send the person to connector
-  settings. Do step 1, including their stated age. Then give them one link that opens their messages app with the approved
-  profile already written: `sms:+18087881821?&body=` followed by the profile, URL-encoded (spaces as
-  %20). The person presses send themselves. That text is their profile; step 3 is not needed.
-- **On a computer.** Do steps 1, 2 and 3. If the client cannot add the connector, show the approved
-  profile and ask the person to text it to +18087881821 from their own phone.
-
-You never send a text for the person, and you never see their number.
-
-## How a person joins (they do it, not you)
-
-The person signs up through you, in this conversation:
-
-1. Build the profile: first name, neighborhood, what they like to do (sports, games, food, art), when they are usually free, and small groups or one-on-one. Start from what you already know about the person: draft the profile from your memory of them and show it. Ask only for what is missing, one or two questions at a time. Never ask for a phone number, a code, an
-   address or anything about another person. Read the profile back and change it until they agree.
-2. Give them one link to confirm their own phone (prefill it as described in "A shorter browser handoff"): https://friends.help/join?via=agent. On that page they type
-   their own number and code, review their first name and age, and agree to the texts. You
-   never see the number or the code.
-3. Ask the person to return to this same agent conversation when they finish on the site.
-   If this app's MCP tools are not available, they must add https://friends.help/mcp in their client's connector settings.
-   In ChatGPT, add https://friends.help/mcp/openai instead; /mcp does not authorize ChatGPT clients.
-   Reading this file does not install a connector or authorize access. If the client cannot add it,
-   use the text link in "Phone or computer"; do not claim success and never send the profile yourself.
-   The person confirms their phone on our page. Access connects automatically. A code is skipped only when that browser
-   has a current session for this app. Call check_status first and confirm its app is friends.
-   If the connection names another app, stop and connect to this app; never submit across apps.
-   Call submit_profile once with their approved profile, then check_status on the same connection.
-   Report success only when both calls confirm it.
-4. No agent at hand: the person can text "friends" or "friends.help" as their first message to +18087881821
-   and answer the agent there.
-
-The person verifies their own phone on our page. You never type a number or a code anywhere.
-
-## Consent rules
-
-- An agent never receives, reads, relays or types a verification code, and never enters a phone
-  number into any form or tool.
-- Never sign up anyone else. Each person joins themselves, on their own phone.
-- If the MCP server asks the person to sign in, they do it in their own browser on our page.
-
-## What you may do
-
-- Explain friends.help, how plans work, safety, the age rules and privacy.
-- Give the join link https://friends.help/join or the keyword "friends".
-- Help the person think about what they like to do, if they ask.
-
-## What you must never do
-
-- Never sign anyone up, and never text or message anyone on the person's behalf.
-- Never ask for, receive or type a verification code or a phone number.
-- Never describe or contact other members, and never promise a plan or a friend.
-- Never move information between friends.help and any other service.
-
-## Privacy
-
-What the person tells friends.help stays in friends.help. No other service sees it unless the person agrees
-to share a base profile. Nobody can learn whether a phone number uses friends.help.
-
-## Stop, leave and delete
-
-- Text STOP: stops every text from this number.
-- Text "leave friends.help": stops friends.help only.
-- To request an export or deletion, email help@ntwrk.party.
-
-## Support
-
-- Email: help@ntwrk.party
-- Privacy: https://friends.help/privacy
-- Terms and text messaging terms: https://friends.help/terms
-
-## A shorter browser handoff
-
-Ask for the person's first name and stated age in the conversation, using confirmed details you already know.
-Ask only for missing details. Never infer age. Read back the profile and get approval.
-For web verification, prefill only these approved details in the URL fragment:
-`https://friends.help/join?via=agent#firstName=Alex&age=28`.
-Replace the example values and URL-encode each value. Never put them in the query string.
-Never include a phone, code, consent, preferences or biography in that link.
-The person reviews these fields and checks the consent box themselves.
-Interests, location and app-specific preferences stay in this conversation until the approved profile submission.
-On mobile, the person can send the approved profile by text; do not also send them through web verification.
-After web signup, return here and follow the connector steps above. Signup alone does not mean the profile was submitted.
-Explain safety and account controls when relevant, rather than repeating them before each step.
+Text STOP to stop messages from the shared line; `leave friends.help` leaves this
+app only. Export/deletion support is help@ntwrk.party. Do not invoke destructive
+account controls during signup. The text keyword is `friends` or `friends.help`
+on +18087881821; sending a text is the person's separate choice, never an automatic
+fallback or an extra signup step.
