@@ -37,11 +37,17 @@ export const MAX_BODY_BYTES = 9 * 1024 * 1024;
 /** Retired account pages must never fall through to the static asset cache. */
 export const RETIRED_SITE_PATHS = ["/settings", "/settings/", "/settings.html"];
 /** Cloudflare Pages _routes.json "include" (sites/sites.ts routesFile). */
-export const RUN_WORKER_FIRST = [...RETIRED_SITE_PATHS, "/api", "/api/*", "/mcp", "/mcp/*", "/oauth/*", "/.well-known/oauth-*"];
+export const RETIRED_SIGNUP_PATHS = ["/join", "/join/", "/join.html"];
+export const RUN_WORKER_FIRST = [...RETIRED_SITE_PATHS, ...RETIRED_SIGNUP_PATHS, "/api", "/api/*", "/mcp", "/mcp/*", "/oauth/*", "/.well-known/oauth-*"];
 
 /** Reject removed account pages before looking up static assets, including stale cached copies. */
-export function retiredSitePage(req: Request): Response | null {
-  if (!RETIRED_SITE_PATHS.includes(new URL(req.url).pathname)) return null;
+export function retiredSitePage(req: Request, app: string): Response | null {
+  const path = new URL(req.url).pathname;
+  if (["ntwrk", "slop", "friends"].includes(app) && RETIRED_SIGNUP_PATHS.includes(path)) {
+    return new Response(null, { status: req.method === "GET" || req.method === "HEAD" ? 302 : 405,
+      headers: { ...(req.method === "GET" || req.method === "HEAD" ? { location: "/" } : { allow: "GET, HEAD" }), "cache-control": "no-store" } });
+  }
+  if (!RETIRED_SITE_PATHS.includes(path)) return null;
   return new Response(req.method === "HEAD" ? null : "Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 }
 
@@ -80,7 +86,7 @@ const jsonError = (status: number, error: string) =>
   new Response(JSON.stringify({ ok: false, error }), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 
 export async function handle(req: Request, env: Env, fetchFn: typeof fetch = fetch, now: () => number = Date.now): Promise<Response> {
-  const retired = retiredSitePage(req);
+  const retired = retiredSitePage(req, env.APP_ID);
   if (retired) return retired;
   const url = new URL(req.url);
   if (!isBackendPath(url.pathname)) return env.ASSETS.fetch(req);

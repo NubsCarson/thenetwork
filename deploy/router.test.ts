@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { PROXY_HEADERS, proxySignature, verifyProxyHeaders } from "../packages/platform/src/proxy.ts";
-import { handle, isBackendPath, MAX_BODY_BYTES, RETIRED_SITE_PATHS, RUN_WORKER_FIRST, UNKNOWN_IP, type Env } from "./router.ts";
+import { handle, isBackendPath, MAX_BODY_BYTES, RETIRED_SITE_PATHS, RETIRED_SIGNUP_PATHS, RUN_WORKER_FIRST, UNKNOWN_IP, type Env } from "./router.ts";
 
 const SECRET = "test-proxy-secret";
 const NOW = Date.UTC(2026, 9, 8, 15, 0, 0);
@@ -41,7 +41,7 @@ const sig = (method: string, path: string, ip: string, secret = SECRET) => proxy
 
 describe("which paths reach the backend", () => {
   const backend = ["/api", "/api/app", "/api/auth/otp/start", "/mcp", "/mcp/", "/oauth/authorize", "/oauth/token", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource/mcp"];
-  const assets = ["/", "/join", "/SKILL.md", "/.well-known/agent-skills/index.json", "/apiary", "/api.html", "/mcpx", "/oauth", "/.well-known/openai-apps-challenge", "/styles.css"];
+  const assets = ["/", "/SKILL.md", "/.well-known/agent-skills/index.json", "/apiary", "/api.html", "/mcpx", "/oauth", "/.well-known/openai-apps-challenge", "/styles.css"];
 
   test.each(backend)("%s is forwarded", async (p) => {
     const { seen, assets: a, run } = setup();
@@ -83,7 +83,7 @@ describe("which paths reach the backend", () => {
     // Backend patterns forward; retired account routes must run the Worker without forwarding.
     for (const pat of RUN_WORKER_FIRST) {
       const sample = pat.endsWith("*") ? pat.slice(0, -1) + "x" : pat;
-      expect(isBackendPath(sample), pat).toBe(!RETIRED_SITE_PATHS.includes(pat));
+      expect(isBackendPath(sample), pat).toBe(![...RETIRED_SITE_PATHS, ...RETIRED_SIGNUP_PATHS].includes(pat));
     }
   });
 });
@@ -237,4 +237,20 @@ describe("fails closed", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://client.example/cb?code=abc");
   });
+});
+
+
+test("retired signup routes cannot expose cached forms or forward writes", async () => {
+  for (const app of ["friends", "slop", "ntwrk"]) {
+    const { env, seen, assets, run } = setup(); env.APP_ID = app;
+    for (const path of ["/join", "/join/", "/join.html", "/join?via=agent"]) {
+      for (const method of ["GET", "HEAD", "POST"]) {
+        const r = await run(path, { method });
+        expect(r.status).toBe(method === "POST" ? 405 : 302);
+        expect(r.headers.get("cache-control")).toBe("no-store");
+        expect(r.headers.get("location")).toBe(method === "POST" ? null : "/");
+      }
+    }
+    expect(seen).toHaveLength(0); expect(assets).toHaveLength(0);
+  }
 });

@@ -55,7 +55,11 @@ describe("a site router in front of the backend", () => {
     routeSiteRequest(new Request(`https://${site}${path}`, { ...init, headers: { "cf-connecting-ip": init.ip, ...(init.headers ?? {}) } }), env(site));
 
   test("the router forwards /api, /mcp, /oauth and /.well-known/oauth-* and serves the rest as assets", async () => {
-    expect(await (await visit("slop.date", "/join", { ip: "198.51.100.1" })).text()).toBe("asset /join");
+    const retiredJoin = await visit("slop.date", "/join", { ip: "198.51.100.1" });
+    expect(retiredJoin.status).toBe(302);
+    expect(retiredJoin.headers.get("location")).toBe("/");
+    expect(retiredJoin.headers.get("cache-control")).toBe("no-store");
+    expect(await (await visit("slop.date", "/SKILL.md", { ip: "198.51.100.1" })).text()).toBe("asset /SKILL.md");
     expect(await (await visit("slop.date", "/.well-known/agent-skills/index.json", { ip: "198.51.100.1" })).text()).toBe("asset /.well-known/agent-skills/index.json");
     expect(await (await visit("slop.date", "/api/app", { ip: "198.51.100.1" })).json()).toMatchObject({ id: "slop" });
     expect(await (await visit("peon.biz", "/api/app", { ip: "198.51.100.1" })).json()).toMatchObject({ id: "peon" });
