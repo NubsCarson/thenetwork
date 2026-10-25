@@ -86,6 +86,137 @@ describe.skipIf(!pgAvailable)("Blooio OTP via local HTTP and Postgres", () => {
     } finally { http.stop(true); }
   });
 
+  test("configured production phone-code apps retain genuine OTP, profile persistence and send/guess caps", async () => {
+    mode = "queued";
+    const p = phone();
+    const options = {
+      store,
+      otp: provider(),
+      env: { PLATFORM_ENV: "production" },
+      hashKey: KEY,
+      sessionSecret: KEY,
+      turnstile: { verify: async () => false },
+      now: () => now,
+      ipOf: () => "203.0.113.231",
+      minStartMs: 0,
+      minVerifyMs: 0,
+      log: (line: string) => logs.push(line),
+    };
+    let api = createPublicApi(options);
+    const http = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        const host = req.headers.get("host")!;
+        return (
+          (await api.fetch(new Request(`https://${host}${new URL(req.url).pathname}`, req))) ??
+          new Response(null, { status: 404 })
+        );
+      },
+    });
+    try {
+      const call = (host: string, path: string, body?: unknown, cookie?: string) =>
+        fetch(`http://127.0.0.1:${http.port}${path}`, {
+          method: body ? "POST" : "GET",
+          headers: {
+            host,
+            ...(body ? { "content-type": "application/json" } : {}),
+            ...(cookie ? { cookie } : {}),
+            "user-agent": "ChatGPT",
+          },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+      const before = requests.length;
+      const blocked = await call("friends.help", "/api/auth/otp/start", { phone: p, phoneOtpOnly: true });
+      expect(blocked.status).toBe(400);
+      expect(await blocked.json()).toMatchObject({ error: "turnstile" });
+      expect(requests.length).toBe(before);
+      expect(await store.latestChallenge("friends", p)).toBeUndefined();
+      for (const policy of ["peon", "friends,friends", "friends,", "unknown"]) {
+        expect(() =>
+          createPublicApi({ ...options, env: { ...options.env, PLATFORM_PHONE_OTP_ONLY_APPS: policy } }),
+        ).toThrow("PLATFORM_PHONE_OTP_ONLY_APPS");
+      }
+      expect(() =>
+        createPublicApi({
+          ...options,
+          otp: { name: "twilio_verify", send: async () => ({}) },
+          env: { ...options.env, PLATFORM_PHONE_OTP_ONLY_APPS: "friends" },
+        }),
+      ).toThrow("Blooio");
+      expect(() =>
+        createPublicApi({
+          ...options,
+          turnstile: undefined,
+          env: { ...options.env, PLATFORM_PHONE_OTP_ONLY_APPS: "friends" },
+        }),
+      ).toThrow("Turnstile");
+      api = createPublicApi({ ...options, env: { ...options.env, PLATFORM_PHONE_OTP_ONLY_APPS: "friends" } });
+      expect((await call("slop.date", "/api/auth/otp/start", { phone: p })).status).toBe(400);
+      const start = await call("friends.help", "/api/auth/otp/start", { phone: p });
+      expect(start.status).toBe(200);
+      const sent = requests.at(-1)!;
+      expect(sent.to).toBe(p);
+      expect(await start.text()).not.toContain(sent.code);
+      expect(await store.latestChallenge("friends", p)).toMatchObject({
+        provider: "blooio",
+        codeHash: keyedHash(KEY, `friends:${p}:${sent.code}`),
+        attempts: 0,
+        expiresAt: now + 600000,
+      });
+      const count = requests.length;
+      const limited = await call("friends.help", "/api/auth/otp/start", { phone: p });
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(requests.length).toBe(count);
+      expect((await call("slop.date", "/api/auth/otp/verify", { phone: p, code: sent.code })).status).toBe(400);
+      const verified = await call("friends.help", "/api/auth/otp/verify", { phone: p, code: sent.code });
+      expect(verified.status).toBe(200);
+      const setCookie = verified.headers.get("set-cookie")!;
+      for (const required of ["__Host-sid=", "Secure", "HttpOnly", "SameSite=Lax"]) expect(setCookie).toContain(required);
+      const cookie = setCookie.split(";")[0]!;
+      expect((await call("friends.help", "/api/auth/otp/verify", { phone: p, code: sent.code })).status).toBe(400);
+      const joined = await call(
+        "friends.help",
+        "/api/join",
+        {
+          firstName: "Ari",
+          age: 29,
+          homeCity: "sf",
+          neighborhood: "Bay Area",
+          about: "Programming and climbing.",
+          interests: ["camping"],
+          consent: { sms: true, version: APPS.friends.consent.version },
+        },
+        cookie,
+      );
+      expect(joined.status).toBe(200);
+      const saved = ((await joined.json()) as any).membership;
+      const readback = await call("friends.help", "/api/me", undefined, cookie);
+      expect(readback.status).toBe(200);
+      expect(((await readback.json()) as any).membership).toEqual(saved);
+      const exported = await call("friends.help", "/api/me/export", undefined, cookie);
+      expect(exported.status).toBe(200);
+      expect(((await exported.json()) as any).membership.profile).toMatchObject({
+        homeCity: "sf",
+        neighborhood: "Bay Area",
+        about: "Programming and climbing.",
+        interests: ["camping"],
+      });
+      expect((await call("slop.date", "/api/me", undefined, cookie)).status).toBe(401);
+      const guessed = phone();
+      expect((await call("friends.help", "/api/auth/otp/start", { phone: guessed })).status).toBe(200);
+      const code = requests.at(-1)!.code,
+        wrong = code === "000000" ? "999999" : "000000";
+      for (let attempt = 0; attempt < 5; attempt++)
+        expect((await call("friends.help", "/api/auth/otp/verify", { phone: guessed, code: wrong })).status).toBe(400);
+      expect((await store.latestChallenge("friends", guessed))!.attempts).toBe(5);
+      expect((await call("friends.help", "/api/auth/otp/verify", { phone: guessed, code })).status).toBe(400);
+      expect(logs.join("\n")).not.toContain(code);
+    } finally {
+      http.stop(true);
+    }
+  });
   test("private receipt survives Postgres and enables a status-only lookup without exposing it in auth responses", async () => {
     mode = "queued";
     const p = phone();

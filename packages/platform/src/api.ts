@@ -134,6 +134,13 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
   const sessionSecret = o.sessionSecret ?? env.PLATFORM_SESSION_SECRET ?? (dev ? DEV_SESSION_SECRET : hashKey);
   if (o.trustForwardedHost && !dev) throw new Error("trustForwardedHost is for the dev site proxy only (PLATFORM_ENV=dev)");
   if (!o.turnstile && !dev) throw new Error("a Turnstile verifier is required outside PLATFORM_ENV=dev (TURNSTILE_SECRET_KEY)");
+  // Explicit deployment policy: genuine phone-code proof without a browser challenge.
+  // Unset preserves Turnstile for every app; callers cannot select this policy.
+  const phoneOtpApps = env.PLATFORM_PHONE_OTP_ONLY_APPS ? env.PLATFORM_PHONE_OTP_ONLY_APPS.split(",").map(app => app.trim()) : [];
+  if (phoneOtpApps.some(app => !["ntwrk", "slop", "friends"].includes(app)) || new Set(phoneOtpApps).size !== phoneOtpApps.length)
+    throw new Error("PLATFORM_PHONE_OTP_ONLY_APPS must list distinct ntwrk, slop or friends app IDs");
+  if (phoneOtpApps.length && o.otp.name !== "blooio") throw new Error("phone-code-only OTP requires Blooio");
+  const phoneOtpOnlyApps = new Set(phoneOtpApps);
   const proxySecret = o.proxySecret ?? env.PLATFORM_PROXY_SECRET ?? undefined;
   const now = o.now ?? Date.now;
   const localOrigin = (raw: string | undefined) => {
@@ -458,7 +465,7 @@ export function createPublicApi(o: PublicApiOptions): PublicApi {
         try {
           const e164 = normalizePhone(b.phone);
           if (!e164) return json(400, { ok: false, error: "invalid_phone" });
-          if (o.turnstile && !(await o.turnstile.verify(typeof b.turnstileToken === "string" ? b.turnstileToken : undefined, ip, dev ? undefined : siteHosts(appId, env)))) {
+          if (!phoneOtpOnlyApps.has(appId) && o.turnstile && !(await o.turnstile.verify(typeof b.turnstileToken === "string" ? b.turnstileToken : undefined, ip, dev ? undefined : siteHosts(appId, env)))) {
             return json(400, { ok: false, error: "turnstile" });
           }
           const r = await otp.start(app, e164, ip);
