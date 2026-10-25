@@ -513,7 +513,7 @@ test("explicit saved-profile reads select the app without consuming onboarding o
   const pending = async () => {
     const rows =
       await sql`select id,state from network.network_state where id in ('friends:nyc','slop:nyc') order by id`;
-    return rows.map((row) => {
+    return rows.map((row: { id: string; state: string | { asks: unknown; members: unknown[] } }) => {
       const state = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
       return {
         id: row.id,
