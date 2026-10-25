@@ -40,6 +40,7 @@ import { NetworkRuntime, type RuntimeHost } from "./runtime.ts";
 import { effectiveParticipation, automatedFacetPredicate } from "./snapshot.ts";
 import { ProfileSuggestions, type SuggestionAuthorization } from "./profile-suggestions.ts";
 import { profileReviewFromEnv } from "./profile-review-factory.ts";
+import { profileReadRequest, savedProfileText } from "./profile-read.ts";
 import { Inbox, type CollectedReply } from "./inbox.ts";
 import { networkRoutePolicy, routeEnvelopeAllowed, sameNetworkAuthority, type NetworkRoutePolicy } from "./route-authority.ts";
 import { TURN_PATH, TURN_RECEIPT_PATH, SET_STATE_PATH, SIGNALS_PATH, UPDATES_PATH, RELAY_PHOTO_RESOLVE_PATH, parseApprovedRelayPhotos, type SetStateRequest, type TurnRequest, type TurnResponse } from "../../core/src/svc/contract.ts";
@@ -960,6 +961,8 @@ export class NetworkService implements RuntimeHost {
       const [r] = await this.sql`select app_id from platform.app_lines where line_e164 = ${line}`;
       if (r && isAppId(r.app_id)) return { app: r.app_id, shared: false };
     }
+    const read = profileReadRequest(ev.text, this.apps);
+    if (read?.kind === "read" && read.app) return { app: read.app, shared: true };
     const named = this.namedApp(ev.text);
     if (named) return { app: named, shared: true };
     const mine = (await this.memberApps(ev.from)).filter(x => this.runtimeFor(x.app));
@@ -1044,6 +1047,7 @@ export class NetworkService implements RuntimeHost {
     const t = this.clock.now();
     const rowId = `in:${ev.channel}:${ev.messageId}`;
     const kw = platformKeyword(ev.text);
+    const profileRead = !kw ? profileReadRequest(ev.text, this.apps) : undefined;
     const line = ev.to ? normalizeAddress(ev.to) : undefined;
 
     // STOP / STOP ALL: the consent ledger first (with or without a membership; once per message), then every member it covers.
@@ -1063,8 +1067,8 @@ export class NetworkService implements RuntimeHost {
     // Photos by text (photoIntake.ts): the answer to the photo consent ask, then any attachment. A photo
     // from a minor, an unknown age, a banned person or a non-member of slop is dropped before it is fetched.
     // Only an explicit YES PHOTOS / NO PHOTOS routed to slop: a bare yes or no goes on to the Network (a probe, a date ask, another app).
-    if (e164 && !kw && (await this.photoIntake.consentAnswer(e164, ev.text, rowId, route.app))) return "handled";
-    if (e164 && ev.mediaUrls?.length) {
+    if (e164 && !kw && !profileRead && (await this.photoIntake.consentAnswer(e164, ev.text, rowId, route.app))) return "handled";
+    if (e164 && ev.mediaUrls?.length && !profileRead) {
       // A provider retry of the same message takes no photo twice.
       const first = (await this.people.hit(`photo_msg:${rowId}`, DAY, t)).count === 1;
       const r = first ? await this.photoIntake.photosIn(e164, ev.mediaUrls, rowId) : { outcome: "duplicate" as const };
@@ -1089,6 +1093,9 @@ export class NetworkService implements RuntimeHost {
       }
     }
 
+    // A read request is never an instruction to join, opt in or create a person.
+    if (!memberId && profileRead) return "handled";
+
     if (memberId) {
       if (kw === "start" && e164) {
         // The recycled-number hold is checked above (seen). A banned number or person is never opted back in.
@@ -1105,7 +1112,7 @@ export class NetworkService implements RuntimeHost {
       const reply = kw === "help" ? app.brand.help : undefined;
       if (!kw && e164 && /^\s*share\W*$/i.test(ev.text) && (await this.pendingOf(e164, "share", app.id))) return this.share(rt, app, memberId, e164, ev, rowId);
       // The answer to The Network's "what are you looking for?": enroll in the apps they named.
-      if (!kw && e164 && app.id === "ntwrk" && (await this.pendingOf(e164, "looking_for"))) {
+      if (!kw && !profileRead && e164 && app.id === "ntwrk" && (await this.pendingOf(e164, "looking_for"))) {
         const wants = lookingFor(ev.text).filter(a => a !== "ntwrk" && this.runtimeFor(a));
         if (wants.length) return this.enroll(rt, memberId, e164, wants, ev, rowId);
       }
@@ -1216,7 +1223,7 @@ export class NetworkService implements RuntimeHost {
     // Not from the thread: a profile from the member's AI assistant, learned but never an answer (InboundMessage.source).
     const out = await this.memberUnit(rt, memberId, ev, rowId, kw, systemReply, !fromThread);
     // The member wrote in the thread: pending notify deliveries count as acted on (an assistant's submit_profile does not).
-    if (out === "handled" && fromThread && this.notify && kw !== "stop" && kw !== "stop_all") {
+    if (out === "handled" && fromThread && this.notify && kw !== "stop" && kw !== "stop_all" && !profileReadRequest(ev.text, this.apps)) {
       const personId = await this.personOfMember(rt, memberId);
       if (personId) await this.notify.threadReply(personId, ev.transport === "sms" ? "sms" : "imessage", this.clock.now()).catch(e => this.log(`[notify] thread reply not recorded: ${(e as Error).message}`));
     }
@@ -1234,6 +1241,34 @@ export class NetworkService implements RuntimeHost {
       rt.unit.inbound = { id: rowId, member_id: memberId, direction: "inbound", channel, body: ev.text, status: "received", type: null, opportunity_id: null, proactive: false, system: false, ts: new Date(t) };
       rt.replyingTo = memberId;
       let disposition: "handled" | "open";
+      const read = !keyword && !fromAssistant ? profileReadRequest(ev.text, this.apps) : undefined;
+      if (read) {
+        try {
+          const e164 = normalizePhone(ev.from);
+          const person = e164 && (await this.accounts.personFor(e164));
+          const own = person && (await this.accounts.activeMembership(rt.app, { e164: e164!, personId: person.id }));
+          // Recheck canonical phone/person/age/review/consent authority inside the
+          // ordinary member unit. This is a reply, never a compliance exemption.
+          if (
+            !own ||
+            own.membership.memberId !== memberId ||
+            n.memberList().find((m) => m.id === memberId)?.optedOut
+          )
+            return "handled" as const;
+          const body =
+            read.kind === "ambiguous"
+              ? "Which profile should I show? For example, say: show my Friends profile."
+              : read.kind === "refused"
+                ? "I can only show the profile saved for your own number."
+                : read.app && read.app !== rt.app.id
+                  ? `This line is for ${rt.app.name}. Ask for that profile here.`
+                  : savedProfileText(rt.app, own.membership, await this.accounts.lowestAge(e164!, own.person));
+          rt.system(memberId, `sys:${rowId}`, body, "reply", "profile_read");
+          return "handled" as const;
+        } finally {
+          rt.replyingTo = undefined;
+        }
+      }
       try { disposition = await n.onInbound({ id: rowId, memberId, body: ev.text, ts: t, channel, ...(keyword ? { keyword } : {}), ...(fromAssistant ? { source: "mcp" as const } : {}) }); } finally { rt.replyingTo = undefined; }
       // Carrier keywords: the app's own confirmation (packages/platform apps.ts). START gets the Network's own welcome back.
       if (systemReply) rt.system(memberId, `sys:${rowId}`, systemReply);

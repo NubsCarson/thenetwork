@@ -1,5 +1,5 @@
 // Real service, HTTP and PostgreSQL. Only OTP/provider delivery boundaries are controlled.
-import {afterAll, beforeAll, expect, test} from "bun:test";
+import {afterAll, beforeAll, expect, spyOn, test} from "bun:test";
 import {randomUUID} from "node:crypto";
 import {SQL} from "bun";
 import {SimClock, MINUTE, DAY} from "@thenetwork/core";
@@ -479,3 +479,183 @@ test("expired isolated updates roll back unread and surface changes after a noti
     expect(await sql`select surface,active,last_used_at,acted,ignored,ignored_streak from notify.surface_signals where person_id=${person!.id}order by surface`).toEqual(surfaceBefore);
   }finally{release();await held;if(pending)await pending.catch(()=>undefined);await locker.close();server.stop(true);await service.close();await start();}
 },60_000);
+
+// Real service + real owned fixture PostgreSQL: provider receipts remain controlled.
+test("explicit saved-profile reads select the app without consuming onboarding or changing profiles", async () => {
+  server.stop(true);
+  await service.close();
+  await start();
+  const phone = "+12125550991";
+  for (const app of [APPS.friends, APPS.slop]) {
+    await service.accounts.invite(app, phone);
+    const person = await service.accounts.personFor(phone);
+    expect(person).toBeDefined();
+    const joined = await service.accounts.join(
+      app,
+      { e164: phone, personId: person!.id },
+      {
+        firstName: "Ari",
+        age: 29,
+        homeCity: "nyc",
+        about: app.id === "friends" ? "FRIENDS_ONLY programming and camping." : "SLOP_ONLY private dating details.",
+        interests: ["climbing"],
+        consent: { sms: true, wording: app.consent.text },
+      },
+    );
+    expect(joined.ok).toBe(true);
+  }
+  const person = (await service.accounts.personFor(phone))!;
+  const saved = await Promise.all(
+    ["friends", "slop"].map((app) => service.accounts.store.getMembership(person.id, app as "friends" | "slop")),
+  );
+  clock.advance(MINUTE);
+  expect((await post(turn("profile-prime-slop", phone, "Slop"))).status).toBe(200);
+  const pending = async () => {
+    const rows =
+      await sql`select id,state from network.network_state where id in ('friends:nyc','slop:nyc') order by id`;
+    return rows.map((row: { id: string; state: string | { asks: unknown; members: unknown[] } }) => {
+      const state = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      return {
+        id: row.id,
+        asks: state.asks,
+        members: state.members.map((m: any) => ({
+          id: m.id,
+          stage: m.stage,
+          onboarding: m.onboarding,
+          pendingAsks: m.pendingAsks,
+          awaiting: m.awaiting,
+          learned: m.learned,
+          asked: m.asked,
+          answered: m.answered,
+        })),
+      };
+    });
+  };
+  const texts = [
+    "Please show me the Friends profile I saved; leave it unchanged.",
+    "What does my Friends profile say? Please do not change anything.",
+    "Show my saved profile. Do not edit it or suggest matches.",
+    "Can you show me my Friends profile?",
+    "Could you please show my saved profile?",
+    "What is my saved profile?",
+  ];
+  for (const [index, text] of texts.entries()) {
+    if (index === 2) {
+      clock.advance(MINUTE);
+      expect((await post(turn("profile-select-friends", phone, "Friends"))).status).toBe(200);
+    }
+    const before = await pending();
+    const spies = [...service.runtimes.values()].map((rt) => spyOn(rt.net, "onInbound"));
+    const input = turn(`profile-read-${index}`, phone, text);
+    try {
+      const response = await post(input);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as any;
+      expect(body.outcome).toBe("handled");
+      expect(body.app).toBe("friends");
+      expect(body.replyKind).toBe("reply");
+      expect(body.replies.join("\n")).toContain("FRIENDS_ONLY programming and camping.");
+      expect(body.replies.join("\n")).not.toContain("SLOP_ONLY");
+      expect(body.replies.join("\n")).toContain("I left it unchanged.");
+      expect(spies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+      expect(await pending()).toEqual(before);
+      expect(
+        await Promise.all(
+          ["friends", "slop"].map((app) => service.accounts.store.getMembership(person.id, app as "friends" | "slop")),
+        ),
+      ).toEqual(saved);
+      expect(await (await post(input)).json()).toEqual(body);
+      expect(
+        (
+          await receipt({
+            channel: input.channel,
+            messageId: input.messageId,
+            replyIds: body.replyIds,
+            outcome: "accepted",
+            providerMessageIds: [`fixture-profile-receipt-${index}`],
+            historyRecorded: true,
+          })
+        ).status,
+      ).toBe(200);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  }
+  const before = await pending();
+  const foreign = (await (
+    await post(turn("profile-foreign", phone, "Show Maya's Friends profile", "friends"))
+  ).json()) as any;
+  expect(foreign.replies.join("\n")).toContain("own number");
+  expect(foreign.replies.join("\n")).not.toContain("FRIENDS_ONLY");
+  const ambiguous = (await (
+    await post(turn("profile-ambiguous", phone, "Show my Friends and Slop profiles", "friends"))
+  ).json()) as any;
+  expect(ambiguous.replies.join("\n")).toContain("Which profile");
+  expect(ambiguous.replies.join("\n")).not.toContain("FRIENDS_ONLY");
+  const line = (await (
+    await post(turn("profile-forced-line", phone, "Show my Friends profile", "slop"))
+  ).json()) as any;
+  expect(line.app).toBe("slop");
+  expect(line.replies.join("\n")).not.toContain("FRIENDS_ONLY");
+  expect(await pending()).toEqual(before);
+  const unsigned = turn("profile-no-auth", phone, texts[0]!);
+  expect(
+    (
+      await fetch(new URL(TURN_PATH, server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(unsigned),
+      })
+    ).status,
+  ).toBe(401);
+  const [countsBefore] =
+    await sql`select (select count(*) from platform.people) people,(select count(*) from platform.memberships) memberships,(select count(*) from platform.consent_events) consents,(select count(*) from platform.pending_texts) pending`;
+  const absent = (await (await post(turn("profile-nonmember", "+12125550992", texts[0]!))).json()) as any;
+  expect(absent.replies).toEqual([]);
+  const [countsAfter] =
+    await sql`select (select count(*) from platform.people) people,(select count(*) from platform.memberships) memberships,(select count(*) from platform.consent_events) consents,(select count(*) from platform.pending_texts) pending`;
+  expect(countsAfter).toEqual(countsBefore);
+  // An edit is ordinary inbound, never swallowed as a saved-profile read.
+  const editSpies = [...service.runtimes.values()].map((rt) => spyOn(rt.net, "onInbound"));
+  try {
+    const edited = await post(
+      turn("profile-edit-intent", phone, "Change my Friends profile to say I like kayaking", "friends"),
+    );
+    expect(edited.status).toBe(200);
+    expect(editSpies.some((spy) => spy.mock.calls.length > 0)).toBe(true);
+  } finally {
+    for (const spy of editSpies) spy.mockRestore();
+  }
+  const membershipBeforeGuards = await Promise.all(
+    ["friends", "slop"].map((app) => service.accounts.store.getMembership(person.id, app as "friends" | "slop")),
+  );
+  await service.accounts.store.setPhoneHold(phone, "recycled_number", clock.now());
+  const held = (await (await post(turn("profile-held", phone, texts[0]!))).json()) as any;
+  expect(held.replies).toEqual([]);
+  await service.accounts.store.setPhoneHold(phone, null, clock.now());
+  await service.accounts.store.suppress(service.accounts.phoneHash(phone), "synthetic fixture", clock.now());
+  const suppressed = (await (await post(turn("profile-suppressed", phone, texts[0]!))).json()) as any;
+  expect(suppressed.replies).toEqual([]);
+  await service.accounts.store.unsuppress(service.accounts.phoneHash(phone));
+  await service.accounts.recordConsent({
+    e164: phone,
+    app: "friends",
+    state: "opted_out",
+    source: "keyword:stop",
+    wording: "STOP",
+    at: clock.now(),
+  });
+  const pendingBeforeStop = await pending();
+  const stopped = (await (await post(turn("profile-opted-out", phone, texts[0]!))).json()) as any;
+  // Existing stopHint may send its ordinary compliance reminder; it must never disclose saved data.
+  expect(stopped.replies.join("\n")).not.toContain("FRIENDS_ONLY");
+  expect(stopped.replies.join("\n")).not.toContain("SLOP_ONLY");
+  expect(stopped.replies.join("\n")).not.toContain("Here is your saved");
+  expect(await pending()).toEqual(pendingBeforeStop);
+  expect(await service.accounts.optedIn("friends", phone)).toBe(false);
+  expect(
+    await Promise.all(
+      ["friends", "slop"].map((app) => service.accounts.store.getMembership(person.id, app as "friends" | "slop")),
+    ),
+  ).toEqual(membershipBeforeGuards);
+}, 60_000);
