@@ -42,9 +42,16 @@ export async function smoke(base: string, app: string, opts: { api?: boolean; fe
   const canonical = await get(`/.well-known/agent-skills/${skill}/SKILL.md`);
   add("/SKILL.md equals the canonical copy", canonical.res?.status === 200 && canonical.body === md.body, String(canonical.res?.status));
 
-  for (const p of ["/privacy", "/terms", "/join"]) {
+  for (const p of ["/privacy", "/terms"]) {
     const r = await get(p);
     add(`GET ${p} is 200`, r.res?.status === 200, String(r.res?.status));
+  }
+  const join = await get("/join");
+  if (["ntwrk", "slop", "friends"].includes(app)) {
+    // Agent-only sites retire signup pages to their own home, exactly as router.ts does.
+    add("GET /join redirects to this site home", join.res?.status === 302 && join.res.headers.get("location") === "/", `${join.res?.status} ${join.res?.headers.get("location")}`);
+  } else {
+    add("GET /join is 200", join.res?.status === 200, String(join.res?.status));
   }
   const missing = await get("/no-such-page-smoke");
   add("an unknown page is 404", missing.res?.status === 404, String(missing.res?.status));
